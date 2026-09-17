@@ -1,0 +1,30 @@
+{
+  "name": "dulces-momentos-pasteleria",
+  "version": "2.0.0",
+  "description": "Sistema de pedidos y checkout para Pastelería Dulces Momentos con Mercado Pago API v2 y WhatsApp",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js"
+  },
+  "dependencies": {
+    "bcryptjs": "^3.0.3",
+    "cors": "^2.8.5",
+    "dotenv": "^17.4.2",
+    "express": "^4.19.2",
+    "jsonwebtoken": "^9.0.3",
+    "mercadopago": "^2.0.15",
+    "nodemailer": "^6.9.13",
+    "pg": "^8.13.3"
+  },
+  "keywords": [
+    "pasteleria",
+    "dulces-momentos",
+    "mercado-pago",
+    "checkout",
+    "express",
+    "whatsapp"
+  ],
+  "author": "Dulces Momentos",
+  "license": "ISC"
+}

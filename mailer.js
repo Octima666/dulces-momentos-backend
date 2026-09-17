@@ -66,7 +66,7 @@ async function sendVerificationEmail(email, code, options = {}) {
     </html>
   `;
 
-  const apiKey = 'xkeysib-a197f3e43f93e7e3883c665ceafc4e517282ea3983679ed872f5faef6beffa62-VH52EuO5UCxK8C6';
+  const apiKey = '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';
   const senderEmail = process.env.EMAIL_USER;
 
   if (!apiKey || !senderEmail) {

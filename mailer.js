@@ -149,3 +149,61 @@ module.exports = {
   transporter,
   sendVerificationCode
 };
+
+require('dotenv').config();
+
+/**
+ * Envía un correo con el PIN de 6 dígitos usando la API HTTP de Brevo
+ * @param {string} email - Dirección de correo de destino
+ * @param {string} code - Código PIN de verificación
+ */
+const sendVerificationEmail = async (email, code) => {
+  try {
+    const response = await fetch('https://api.brevo.com/v3/smtp/email', {
+      method: 'POST',
+      headers: {
+        'accept': 'application/json',
+        'api-key': process.env.EMAIL_PASS,
+        'content-type': 'application/json'
+      },
+      body: JSON.stringify({
+        sender: {
+          name: "Dulces Momentos",
+          email: process.env.EMAIL_USER
+        },
+        to: [{ email: email }],
+        subject: "Tu código de verificación - Dulces Momentos",
+        htmlContent: `
+          <div style="font-family: Arial, sans-serif; background-color: #ffe6f2; padding: 20px; border-radius: 10px;">
+            <div style="max-width: 500px; margin: auto; background: white; padding: 30px; border-radius: 8px; box-shadow: 0 4px 10px rgba(0,0,0,0.1);">
+              <h2 style="color: #d63384; text-align: center;">Dulces Momentos 🧁</h2>
+              <p style="font-size: 16px; color: #333;">Hola,</p>
+              <p style="font-size: 16px; color: #333;">Tu código de verificación para completar la autenticación es:</p>
+              <div style="text-align: center; margin: 30px 0;">
+                <span style="font-size: 32px; font-weight: bold; background: #fff0f5; color: #d63384; padding: 12px 24px; border-radius: 6px; letter-spacing: 5px; border: 1px dashed #d63384;">${code}</span>
+              </div>
+              <p style="font-size: 14px; color: #666; text-align: center;">Este código expirará en 10 minutos.</p>
+              <hr style="border: none; border-top: 1px solid #eee; margin: 20px 0;">
+              <p style="font-size: 12px; color: #999; text-align: center;">Si no solicitaste este código, puedes ignorar este mensaje.</p>
+            </div>
+          </div>
+        `
+      })
+    });
+
+    const data = await response.json();
+    
+    if (!response.ok) {
+      console.error('Error detallado de Brevo:', data);
+      throw new Error(data.message || 'Error al enviar correo mediante Brevo');
+    }
+
+    console.log('Correo enviado exitosamente a:', email);
+    return true;
+  } catch (error) {
+    console.error('Error al enviar el correo:', error);
+    throw error;
+  }
+};
+
+module.exports = { sendVerificationEmail };

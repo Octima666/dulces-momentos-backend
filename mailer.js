@@ -29,7 +29,7 @@ const transporter = nodemailer.createTransport({
  * @param {object} [options] - Opciones adicionales (ej: { isRegister: true, nombre: 'Sofía' })
  * @returns {Promise<object>} Información del envío
  */
-async function sendVerificationCode(email, code, options = {}) {
+async function sendVerificationEmail(email, code, options = {}) {
   const isRegister = options.isRegister || false;
   const nombre = options.nombre ? options.nombre : '';
 

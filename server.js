@@ -98,7 +98,7 @@ app.post('/api/login', async (req, res) => {
     }
 
     // 4. Enviar el correo con Nodemailer (tema oscuro y rosa)
-    await sendVerificationCode(email, code, { isRegister: false, nombre: nombreUsuario });
+   await sendVerificationEmail(email, code, { isRegister: false, nombre: nombreUsuario });
 
     console.log(`[2FA Login] Código PIN enviado a: ${email}`);
 

@@ -1,7 +1,7 @@
 /**
  * ============================================================================
  * PASTELERÍA "DULCES MOMENTOS" - SERVIDOR BACKEND (server.js)
- * Node.js + Express + PostgreSQL (Neon Tech) + Nodemailer + Mercado Pago
+ * Node.js + Express + PostgreSQL (Neon Tech) + Brevo API + Mercado Pago
  * ============================================================================
  */
 
@@ -14,7 +14,7 @@ const jwt = require('jsonwebtoken');
 
 // Módulos locales de Base de Datos y Correo
 const pool = require('./db');
-const { sendVerificationCode } = require('./mailer');
+const { sendVerificationEmail } = require('./mailer');
 
 // SDK Mercado Pago (opcional para pagos)
 let MercadoPagoConfig, Preference;
@@ -54,7 +54,7 @@ app.use(express.static(path.join(__dirname, '.')));
  * POST /api/login
  * Recibe email, genera un código de 6 dígitos con expiración de 10 minutos,
  * limpia registros viejos e inserta el nuevo código en la tabla verification_codes de Neon.
- * Luego envía el correo con Nodemailer y devuelve { requires2FA: true }.
+ * Luego envía el correo y devuelve { requires2FA: true }.
  */
 app.post('/api/login', async (req, res) => {
   try {
@@ -97,8 +97,8 @@ app.post('/api/login', async (req, res) => {
       nombreUsuario = uRes.rows[0].nombre;
     }
 
-    // 4. Enviar el correo con Nodemailer (tema oscuro y rosa)
-   await sendVerificationEmail(email, code, { isRegister: false, nombre: nombreUsuario });
+    // 4. Enviar el correo usando la API HTTP de Brevo
+    await sendVerificationEmail(email, code, { isRegister: false, nombre: nombreUsuario });
 
     console.log(`[2FA Login] Código PIN enviado a: ${email}`);
 
@@ -179,7 +179,7 @@ app.post('/api/register', async (req, res) => {
     );
 
     // 4. Enviar correo de confirmación de registro
-    await sendVerificationCode(email, code, {
+    await sendVerificationEmail(email, code, {
       isRegister: true,
       nombre: nombre || email.split('@')[0]
     });
@@ -284,7 +284,6 @@ app.post('/api/verify-code', async (req, res) => {
 // 3. ENDPOINTS ADICIONALES (Compatibilidad Frontend & Checkout)
 // ----------------------------------------------------------------------------
 
-// Rutas de compatibilidad con /api/auth/*
 app.post('/api/auth/register', (req, res, next) => {
   req.url = '/api/register';
   app.handle(req, res, next);

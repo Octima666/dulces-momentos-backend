@@ -1,73 +1,33 @@
-/**
- * ============================================================================
- * SERVICIO DE CORREOS ELECTRÓNICOS (Resend API HTTP)
- * Archivo: mailer.js - Pastelería Dulces Momentos
- * ============================================================================
- */
-
-require('dotenv').config();
 const { Resend } = require('resend');
 
-// Inicializar SDK de Resend con la API Key del entorno
 const resend = new Resend(process.env.RESEND_API_KEY);
 
-/**
- * Envía un correo estilizado con tema oscuro y rosa con el PIN de 6 dígitos
- * @param {string} email - Dirección de correo de destino
- * @param {string} code - Código de 6 dígitos
- * @param {object} options - Opciones adicionales
- * @returns {Promise<boolean>} Éxito del envío
- */
 async function sendVerificationEmail(email, code, options = {}) {
   const isRegister = options.isRegister || false;
-  const nombre = options.nombre || '';
-  const greeting = nombre ? `¡Hola, ${nombre}!` : '¡Hola!';
+  const nombre = options.nombre || email.split('@')[0];
 
-  const subject = isRegister 
-    ? 'Confirma tu cuenta - Pastelería Dulces Momentos' 
-    : 'Código de acceso (2FA) - Pastelería Dulces Momentos';
+  const subject = isRegister
+    ? 'Confirma tu cuenta - Pastelería Dulces Momentos'
+    : 'Código de verificación - Pastelería Dulces Momentos';
 
-  const actionText = isRegister
-    ? 'Estás a un solo paso de activar tu cuenta en Dulces Momentos. Utiliza el siguiente código de verificación:'
-    : 'Has solicitado iniciar sesión en Dulces Momentos. Utiliza el siguiente código de seguridad:';
+  const titulo = isRegister
+    ? `¡Bienvenido/a, ${nombre}!`
+    : `Hola, ${nombre}`;
+
+  const mensaje = isRegister
+    ? 'Gracias por registrarte en Dulces Momentos. Usa el siguiente código de 6 dígitos para activar tu cuenta:'
+    : 'Usa el siguiente código de 6 dígitos para iniciar sesión en tu cuenta:';
 
   const htmlContent = `
-    <!DOCTYPE html>
-    <html lang="es">
-    <head>
-      <meta charset="UTF-8">
-      <style>
-        body { background-color: #121212; color: #f1f1f1; font-family: 'Segoe UI', Arial, sans-serif; margin: 0; padding: 0; }
-        .container { max-width: 600px; margin: 30px auto; background: #1e1e1e; border-radius: 12px; overflow: hidden; border: 1px solid #333; box-shadow: 0 4px 15px rgba(0,0,0,0.5); }
-        .header { background: linear-gradient(135deg, #ff69b4, #d147a3); padding: 30px; text-align: center; color: #ffffff; }
-        .header h1 { margin: 0; font-size: 24px; letter-spacing: 1px; font-weight: 700; }
-        .content { padding: 40px 30px; text-align: center; }
-        .greeting { font-size: 20px; font-weight: 600; color: #ff8da1; margin-bottom: 20px; }
-        .text { font-size: 16px; color: #cccccc; line-height: 1.6; margin-bottom: 30px; }
-        .code-box { background-color: #2a2a2a; border: 2px dashed #ff69b4; border-radius: 8px; padding: 20px; display: inline-block; margin-bottom: 30px; }
-        .code { font-size: 36px; font-weight: bold; letter-spacing: 6px; color: #ff69b4; margin: 0; }
-        .footer { background-color: #181818; padding: 20px; text-align: center; font-size: 12px; color: #777777; border-top: 1px solid #282828; }
-      </style>
-    </head>
-    <body>
-      <div class="container">
-        <div class="header">
-          <h1>🍰 Pastelería Dulces Momentos</h1>
-        </div>
-        <div class="content">
-          <div class="greeting">${greeting}</div>
-          <p class="text">${actionText}</p>
-          <div class="code-box">
-            <p class="code">${code}</p>
-          </div>
-          <p class="text" style="font-size: 14px; color: #999999;">Este código expirará en 10 minutos. Si no solicitaste este código, puedes ignorar este mensaje.</p>
-        </div>
-        <div class="footer">
-          <p>&copy; 2026 Pastelería Dulces Momentos. Todos los derechos reservados.</p>
-        </div>
+    <div style="font-family: Arial, sans-serif; max-width: 500px; margin: 0 auto; padding: 20px; border: 1px solid #eee; border-radius: 10px; background-color: #ffffff;">
+      <h2 style="color: #d63384; text-align: center;">🍰 Dulces Momentos</h2>
+      <h3 style="color: #333;">${titulo}</h3>
+      <p style="color: #555; line-height: 1.5;">${mensaje}</p>
+      <div style="text-align: center; margin: 30px 0;">
+        <span style="font-size: 32px; font-weight: bold; letter-spacing: 5px; color: #d63384; background-color: #f8f9fa; padding: 10px 20px; border-radius: 8px; border: 1px dashed #d63384;">${code}</span>
       </div>
-    </body>
-    </html>
+      <p style="color: #777; font-size: 13px; text-align: center;">Este código expira en 10 minutos. Si no solicitaste este código, ignora este mensaje.</p>
+    </div>
   `;
 
   if (!process.env.RESEND_API_KEY) {
@@ -86,11 +46,9 @@ async function sendVerificationEmail(email, code, options = {}) {
     console.log(`[Resend API] ✅ Correo enviado exitosamente a: ${email} (ID: ${data.id})`);
     return true;
   } catch (error) {
-    console.error('[Error al enviar correo via Resend API]:', error.message);
+    console.error('[Resend API Error]:', error);
     throw error;
   }
 }
 
-module.exports = {
-  sendVerificationEmail
-};
+module.exports = { sendVerificationEmail };

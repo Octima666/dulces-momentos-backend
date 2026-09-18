@@ -1,29 +1,18 @@
 /**
  * ============================================================================
- * SERVICIO DE CORREOS ELECTRÓNICOS (Gmail SMTP con Nodemailer)
+ * SERVICIO DE CORREOS ELECTRÓNICOS (Resend API HTTP)
  * Archivo: mailer.js - Pastelería Dulces Momentos
  * ============================================================================
  */
 
 require('dotenv').config();
-const nodemailer = require('nodemailer');
+const { Resend } = require('resend');
 
-// Configuración explícita para puerto 465 (evita bloqueos de Render)
-const transporter = nodemailer.createTransport({
-  host: 'smtp.gmail.com',
-  port: 465,
-  secure: true, // TLS directo
-  auth: {
-    user: process.env.EMAIL_USER,
-    pass: process.env.EMAIL_PASS
-  },
-  connectionTimeout: 10000, // Timeout de 10s para no congelar el servidor
-  greetingTimeout: 10000,
-  socketTimeout: 10000
-});
+// Inicializar SDK de Resend con la API Key del entorno
+const resend = new Resend(process.env.RESEND_API_KEY);
 
 /**
- * Envía un correo estilizado con tema oscuro y rosa con el PIN de 6 dígitos usando Gmail SMTP
+ * Envía un correo estilizado con tema oscuro y rosa con el PIN de 6 dígitos
  * @param {string} email - Dirección de correo de destino
  * @param {string} code - Código de 6 dígitos
  * @param {object} options - Opciones adicionales
@@ -81,26 +70,23 @@ async function sendVerificationEmail(email, code, options = {}) {
     </html>
   `;
 
-  const senderEmail = process.env.EMAIL_USER;
-  const emailPass = process.env.EMAIL_PASS;
-
-  if (!emailPass || !senderEmail) {
-    console.error('[Gmail SMTP Error] Faltan las credenciales EMAIL_PASS o EMAIL_USER en el entorno.');
-    throw new Error('Credenciales de correo no configuradas en el servidor.');
+  if (!process.env.RESEND_API_KEY) {
+    console.error('[Resend Error] Falta la variable RESEND_API_KEY en el entorno.');
+    throw new Error('Credenciales de Resend no configuradas.');
   }
 
   try {
-    const info = await transporter.sendMail({
-      from: `"Dulces Momentos" <${senderEmail}>`,
-      to: email,
+    const data = await resend.emails.send({
+      from: 'Dulces Momentos <onboarding@resend.dev>',
+      to: [email],
       subject: subject,
       html: htmlContent
     });
 
-    console.log(`[Gmail SMTP] ✅ Correo enviado exitosamente a: ${email} (ID: ${info.messageId})`);
+    console.log(`[Resend API] ✅ Correo enviado exitosamente a: ${email} (ID: ${data.id})`);
     return true;
   } catch (error) {
-    console.error('[Error al enviar el correo via Gmail SMTP]:', error.message);
+    console.error('[Error al enviar correo via Resend API]:', error.message);
     throw error;
   }
 }

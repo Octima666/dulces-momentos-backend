@@ -1,7 +1,21 @@
-/**
- * POST /api/register
- * Solo genera el PIN y lo envía por correo. NO crea el usuario en la DB todavía.
- */
+const express = require('express');
+const cors = require('cors');
+const bcrypt = require('bcrypt');
+const pool = require('./db'); // Tu conexión a PostgreSQL/Neon
+const { sendVerificationEmail } = require('./mailer');
+
+const app = express();
+
+app.use(cors());
+app.use(express.json());
+
+// Expresión regular para validar formato de correo
+const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+// ============================================================================
+// RUTAS DE LA API (AQUÍ DEBEN IR TUS RUTAS)
+// ============================================================================
+
 app.post('/api/register', async (req, res) => {
   try {
     const rawEmail = req.body.email || req.body.correo;
@@ -22,7 +36,6 @@ app.post('/api/register', async (req, res) => {
       });
     }
 
-    // 1. Verificar si el usuario YA existe en la base de datos
     const checkUser = await pool.query('SELECT id FROM usuarios WHERE correo = $1', [email]);
     if (checkUser.rows.length > 0) {
       return res.status(400).json({
@@ -31,16 +44,13 @@ app.post('/api/register', async (req, res) => {
       });
     }
 
-    // 2. Preparar los datos temporales del usuario
     const nom = (nombre || email.split('@')[0]).trim();
     const ape = (apellido || 'Cliente').trim();
     const pwd = password ? String(password) : 'auth_2fa_pass';
     const hash = await bcrypt.hash(pwd, 10);
 
-    // 3. Generar PIN de 6 dígitos
     const code = Math.floor(100000 + Math.random() * 900000).toString();
 
-    // 4. Guardar PIN y datos temporales en la tabla verification_codes
     await pool.query(
       'DELETE FROM verification_codes WHERE email = $1 OR expires_at < NOW()',
       [email]
@@ -52,10 +62,6 @@ app.post('/api/register', async (req, res) => {
       [email, code]
     );
 
-    // Guardamos los datos temporales para crearlo tras verificar (puedes guardarlo en memoria o sesión)
-    // O procesarlo en la verificación.
-    
-    // 5. Enviar el código por correo
     await sendVerificationEmail(email, code, {
       isRegister: true,
       nombre: nom
@@ -65,7 +71,7 @@ app.post('/api/register', async (req, res) => {
 
     return res.status(200).json({
       requires2FA: true,
-      tempUserData: { email, nombre: nom, apellido: ape, hash }, // Datos temporales para la verificación
+      tempUserData: { email, nombre: nom, apellido: ape, hash },
       message: 'Código de verificación enviado a tu correo.'
     });
 
@@ -79,10 +85,6 @@ app.post('/api/register', async (req, res) => {
   }
 });
 
-/**
- * POST /api/verify-2fa
- * Verifica el PIN. Si es registro, recién aquí crea la cuenta en la DB.
- */
 app.post('/api/verify-2fa', async (req, res) => {
   try {
     const { email, code, isRegister, userData } = req.body;
@@ -96,7 +98,6 @@ app.post('/api/verify-2fa', async (req, res) => {
 
     const cleanEmail = String(email).trim().toLowerCase();
 
-    // 1. Validar el código en verification_codes
     const result = await pool.query(
       'SELECT * FROM verification_codes WHERE email = $1 AND code = $2 AND expires_at > NOW()',
       [cleanEmail, code]
@@ -109,10 +110,8 @@ app.post('/api/verify-2fa', async (req, res) => {
       });
     }
 
-    // 2. Si el código es correcto, consumirlo/borrarlo
     await pool.query('DELETE FROM verification_codes WHERE email = $1', [cleanEmail]);
 
-    // 3. Si viene del flujo de registro, crear al usuario en la DB AHORA
     let user;
     if (isRegister && userData) {
       const { nombre, apellido, hash } = userData;
@@ -141,4 +140,10 @@ app.post('/api/verify-2fa', async (req, res) => {
       error: 'Error al verificar el código.'
     });
   }
+});
+
+// Inicio del servidor al final del archivo
+const PORT = process.env.PORT || 10000;
+app.listen(PORT, () => {
+  console.log(`Servidor iniciado en puerto ${PORT}`);
 });

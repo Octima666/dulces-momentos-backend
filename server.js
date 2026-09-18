@@ -1,6 +1,6 @@
 const express = require('express');
 const cors = require('cors');
-const bcrypt = require('bcrypt');
+const bcrypt = require('bcryptjs'); // Usamos bcryptjs para evitar errores en Render
 const pool = require('./db'); // Tu conexión a PostgreSQL/Neon
 const { sendVerificationEmail } = require('./mailer');
 
@@ -13,7 +13,7 @@ app.use(express.json());
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 // ============================================================================
-// RUTAS DE LA API (AQUÍ DEBEN IR TUS RUTAS)
+// RUTAS DE LA API
 // ============================================================================
 
 app.post('/api/register', async (req, res) => {

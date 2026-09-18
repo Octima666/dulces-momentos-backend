@@ -1,7 +1,24 @@
-const { Resend } = require('resend');
+/**
+ * ============================================================================
+ * PASTELERÍA "DULCES MOMENTOS" - MÓDULO DE CORREO (mailer.js)
+ * Envío de correos 2FA vía Nodemailer + Gmail SMTP
+ * ============================================================================
+ */
 
-const resend = new Resend(process.env.RESEND_API_KEY);
+const nodemailer = require('nodemailer');
 
+// Configuración del servicio SMTP de Gmail usando variables de entorno
+const transporter = nodemailer.createTransport({
+  service: 'gmail',
+  auth: {
+    user: process.env.EMAIL_USER, // joalugo45@gmail.com
+    pass: process.env.EMAIL_PASS  // wbumziuonzjdflqk
+  }
+});
+
+/**
+ * Función principal para enviar códigos de verificación PIN (2FA)
+ */
 async function sendVerificationEmail(email, code, options = {}) {
   const isRegister = options.isRegister || false;
   const nombre = options.nombre || email.split('@')[0];
@@ -10,10 +27,7 @@ async function sendVerificationEmail(email, code, options = {}) {
     ? 'Confirma tu cuenta - Pastelería Dulces Momentos'
     : 'Código de verificación - Pastelería Dulces Momentos';
 
-  const titulo = isRegister
-    ? `¡Bienvenido/a, ${nombre}!`
-    : `Hola, ${nombre}`;
-
+  const titulo = isRegister ? `¡Bienvenido/a, ${nombre}!` : `Hola, ${nombre}`;
   const mensaje = isRegister
     ? 'Gracias por registrarte en Dulces Momentos. Usa el siguiente código de 6 dígitos para activar tu cuenta:'
     : 'Usa el siguiente código de 6 dígitos para iniciar sesión en tu cuenta:';
@@ -30,23 +44,19 @@ async function sendVerificationEmail(email, code, options = {}) {
     </div>
   `;
 
-  if (!process.env.RESEND_API_KEY) {
-    console.error('[Resend Error] Falta la variable RESEND_API_KEY en el entorno.');
-    throw new Error('Credenciales de Resend no configuradas.');
-  }
+  const mailOptions = {
+    from: `"Dulces Momentos" <${process.env.EMAIL_USER}>`,
+    to: email,
+    subject: subject,
+    html: htmlContent
+  };
 
   try {
-    const data = await resend.emails.send({
-      from: 'Dulces Momentos <onboarding@resend.dev>',
-      to: [email],
-      subject: subject,
-      html: htmlContent
-    });
-
-    console.log(`[Resend API] ✅ Correo enviado exitosamente a: ${email} (ID: ${data.id})`);
+    const info = await transporter.sendMail(mailOptions);
+    console.log(`[Nodemailer] ✅ Correo enviado exitosamente a: ${email} (ID: ${info.messageId})`);
     return true;
   } catch (error) {
-    console.error('[Resend API Error]:', error);
+    console.error('[Nodemailer Error]:', error);
     throw error;
   }
 }

@@ -1,19 +1,22 @@
 /**
  * ============================================================================
  * CONEXIÓN A BASE DE DATOS POSTGRESQL (Neon Tech)
- * Archivo: db.js
+ * Archivo: db.js - Pastelería Dulces Momentos
  * ============================================================================
  */
 
 require('dotenv').config();
 const { Pool } = require('pg');
 
-// Configuración de la conexión con SSL rejectUnauthorized: false para Neon
+// Configuración con tiempos límite de espera para evitar peticiones colgadas
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
   ssl: {
     rejectUnauthorized: false
-  }
+  },
+  max: 10,                       // Máximo de conexiones en el pool
+  idleTimeoutMillis: 30000,      // Cierra conexiones inactivas tras 30s
+  connectionTimeoutMillis: 10000 // Error si tarda más de 10s en conectar
 });
 
 // Eventos informativos del pool
@@ -30,7 +33,6 @@ pool.on('error', (err) => {
  */
 async function initTables() {
   try {
-    // Tabla para códigos de verificación 2FA
     await pool.query(`
       CREATE TABLE IF NOT EXISTS verification_codes (
         id SERIAL PRIMARY KEY,
@@ -41,7 +43,6 @@ async function initTables() {
       );
     `);
 
-    // Tabla de usuarios
     await pool.query(`
       CREATE TABLE IF NOT EXISTS usuarios (
         id SERIAL PRIMARY KEY,
@@ -59,7 +60,7 @@ async function initTables() {
   }
 }
 
-// Inicializar tablas al importar el módulo
+// Inicializar tablas al cargar el archivo
 initTables();
 
 module.exports = pool;

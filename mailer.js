@@ -1,14 +1,24 @@
 /**
  * ============================================================================
- * SERVICIO DE CORREOS ELECTRÓNICOS (Brevo HTTP API)
+ * SERVICIO DE CORREOS ELECTRÓNICOS (Gmail SMTP con Nodemailer)
  * Archivo: mailer.js - Pastelería Dulces Momentos
  * ============================================================================
  */
 
 require('dotenv').config();
+const nodemailer = require('nodemailer');
+
+// Configuración del transporte de Nodemailer con el SMTP de Gmail
+const transporter = nodemailer.createTransport({
+  service: 'gmail',
+  auth: {
+    user: process.env.EMAIL_USER,
+    pass: process.env.EMAIL_PASS
+  }
+});
 
 /**
- * Envía un correo estilizado con tema oscuro y rosa con el PIN de 6 dígitos usando la API HTTP de Brevo
+ * Envía un correo estilizado con tema oscuro y rosa con el PIN de 6 dígitos usando Gmail SMTP
  * @param {string} email - Dirección de correo de destino
  * @param {string} code - Código de 6 dígitos
  * @param {object} options - Opciones adicionales (ej: { isRegister: true, nombre: 'Sofía' })
@@ -66,41 +76,26 @@ async function sendVerificationEmail(email, code, options = {}) {
     </html>
   `;
 
-  const apiKey = process.env.EMAIL_PASS;
   const senderEmail = process.env.EMAIL_USER;
+  const emailPass = process.env.EMAIL_PASS;
 
-  if (!apiKey || !senderEmail) {
-    console.error('[Brevo Error] Faltan las credenciales EMAIL_PASS o EMAIL_USER en el entorno.');
+  if (!emailPass || !senderEmail) {
+    console.error('[Gmail SMTP Error] Faltan las credenciales EMAIL_PASS o EMAIL_USER en el entorno.');
     throw new Error('Credenciales de correo no configuradas en el servidor.');
   }
 
   try {
-    const response = await fetch('https://api.brevo.com/v3/smtp/email', {
-      method: 'POST',
-      headers: {
-        'accept': 'application/json',
-        'api-key': apiKey,
-        'content-type': 'application/json'
-      },
-      body: JSON.stringify({
-        sender: { name: 'Dulces Momentos', email: senderEmail },
-        to: [{ email: email }],
-        subject: subject,
-        htmlContent: htmlContent
-      })
+    const info = await transporter.sendMail({
+      from: `"Dulces Momentos" <${senderEmail}>`,
+      to: email,
+      subject: subject,
+      html: htmlContent
     });
 
-    const data = await response.json();
-
-    if (!response.ok) {
-      console.error('[Brevo Error Detallado]:', data);
-      throw new Error(data.message || 'Error al enviar correo mediante API de Brevo');
-    }
-
-    console.log(`[Brevo API] ✅ Correo enviado exitosamente a: ${email}`);
+    console.log(`[Gmail SMTP] ✅ Correo enviado exitosamente a: ${email} (ID: ${info.messageId})`);
     return true;
   } catch (error) {
-    console.error('[Error al enviar el correo]:', error.message);
+    console.error('[Error al enviar el correo via Gmail SMTP]:', error.message);
     throw error;
   }
 }

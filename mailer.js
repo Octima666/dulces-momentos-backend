@@ -8,20 +8,25 @@
 require('dotenv').config();
 const nodemailer = require('nodemailer');
 
-// Configuración del transporte de Nodemailer con el SMTP de Gmail
+// Configuración explícita para puerto 465 (evita bloqueos de Render)
 const transporter = nodemailer.createTransport({
-  service: 'gmail',
+  host: 'smtp.gmail.com',
+  port: 465,
+  secure: true, // TLS directo
   auth: {
     user: process.env.EMAIL_USER,
     pass: process.env.EMAIL_PASS
-  }
+  },
+  connectionTimeout: 10000, // Timeout de 10s para no congelar el servidor
+  greetingTimeout: 10000,
+  socketTimeout: 10000
 });
 
 /**
  * Envía un correo estilizado con tema oscuro y rosa con el PIN de 6 dígitos usando Gmail SMTP
  * @param {string} email - Dirección de correo de destino
  * @param {string} code - Código de 6 dígitos
- * @param {object} options - Opciones adicionales (ej: { isRegister: true, nombre: 'Sofía' })
+ * @param {object} options - Opciones adicionales
  * @returns {Promise<boolean>} Éxito del envío
  */
 async function sendVerificationEmail(email, code, options = {}) {

@@ -1,7 +1,7 @@
 /**
  * ============================================================================
  * PASTELERÍA "DULCES MOMENTOS" - SERVIDOR BACKEND (server.js)
- * Node.js + Express + PostgreSQL (Neon Tech) + Brevo API + Mercado Pago
+ * Node.js + Express + PostgreSQL (Neon Tech) + Gmail SMTP + Mercado Pago
  * ============================================================================
  */
 
@@ -16,7 +16,7 @@ const jwt = require('jsonwebtoken');
 const pool = require('./db');
 const { sendVerificationEmail } = require('./mailer');
 
-// SDK Mercado Pago (opcional para pagos)
+// SDK Mercado Pago
 let MercadoPagoConfig, Preference;
 try {
   const mp = require('mercadopago');
@@ -27,7 +27,7 @@ try {
 }
 
 const app = express();
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 10000;
 const JWT_SECRET = process.env.JWT_SECRET || 'dulces_momentos_secret_key_2026_super_secure_jwt_token!';
 
 // Regex estricto de validación de correo
@@ -41,10 +41,8 @@ app.use(cors({
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization']
 }));
-app.use(express.json());
 
-// Servir archivos estáticos del frontend (HTML, CSS, JS, imágenes)
-app.use(express.static(path.join(__dirname, '.')));
+app.use(express.json());
 
 // ----------------------------------------------------------------------------
 // 2. ENDPOINTS 2FA (LOGIN, REGISTRO Y VERIFICACIÓN)
@@ -52,9 +50,6 @@ app.use(express.static(path.join(__dirname, '.')));
 
 /**
  * POST /api/login
- * Recibe email, genera un código de 6 dígitos con expiración de 10 minutos,
- * limpia registros viejos e inserta el nuevo código en la tabla verification_codes de Neon.
- * Luego envía el correo y devuelve { requires2FA: true }.
  */
 app.post('/api/login', async (req, res) => {
   try {
@@ -75,16 +70,16 @@ app.post('/api/login', async (req, res) => {
       });
     }
 
-    // 1. Generar PIN de 6 dígitos numéricos
+    // Generar PIN de 6 dígitos numéricos
     const code = Math.floor(100000 + Math.random() * 900000).toString();
 
-    // 2. Limpiar registros viejos (del mismo email o expirados)
+    // Limpiar registros viejos (del mismo email o expirados)
     await pool.query(
       'DELETE FROM verification_codes WHERE email = $1 OR expires_at < NOW()',
       [email]
     );
 
-    // 3. Insertar nuevo código con expiración de 10 minutos en Neon
+    // Insertar nuevo código con expiración de 10 minutos
     await pool.query(
       "INSERT INTO verification_codes (email, code, expires_at) VALUES ($1, $2, NOW() + INTERVAL '10 minutes')",
       [email, code]
@@ -97,10 +92,10 @@ app.post('/api/login', async (req, res) => {
       nombreUsuario = uRes.rows[0].nombre;
     }
 
-    // 4. Enviar el correo usando la API HTTP de Brevo
+    // Enviar correo vía Gmail SMTP
     await sendVerificationEmail(email, code, { isRegister: false, nombre: nombreUsuario });
 
-    console.log(`[2FA Login] Código PIN enviado a: ${email}`);
+    console.log(`[2FA Login] ✅ Código PIN enviado exitosamente a: ${email}`);
 
     return res.status(200).json({
       requires2FA: true,
@@ -119,8 +114,6 @@ app.post('/api/login', async (req, res) => {
 
 /**
  * POST /api/register
- * Crea el PIN y envía el correo de verificación para cuentas nuevas.
- * Si se envían datos (nombre, apellido, password), los guarda en la tabla usuarios.
  */
 app.post('/api/register', async (req, res) => {
   try {
@@ -142,7 +135,6 @@ app.post('/api/register', async (req, res) => {
       });
     }
 
-    // Registrar o actualizar datos previos del usuario si se enviaron
     if (nombre || apellido || password) {
       const nom = (nombre || email.split('@')[0]).trim();
       const ape = (apellido || 'Cliente').trim();
@@ -163,28 +155,24 @@ app.post('/api/register', async (req, res) => {
       }
     }
 
-    // 1. Generar PIN de 6 dígitos
     const code = Math.floor(100000 + Math.random() * 900000).toString();
 
-    // 2. Limpiar registros viejos del email
     await pool.query(
       'DELETE FROM verification_codes WHERE email = $1 OR expires_at < NOW()',
       [email]
     );
 
-    // 3. Insertar nuevo código con expiración de 10 minutos
     await pool.query(
       "INSERT INTO verification_codes (email, code, expires_at) VALUES ($1, $2, NOW() + INTERVAL '10 minutes')",
       [email, code]
     );
 
-    // 4. Enviar correo de confirmación de registro
     await sendVerificationEmail(email, code, {
       isRegister: true,
       nombre: nombre || email.split('@')[0]
     });
 
-    console.log(`[2FA Register] PIN de confirmación enviado a nueva cuenta: ${email}`);
+    console.log(`[2FA Register] ✅ PIN de confirmación enviado a: ${email}`);
 
     return res.status(200).json({
       requires2FA: true,
@@ -203,8 +191,6 @@ app.post('/api/register', async (req, res) => {
 
 /**
  * POST /api/verify-code
- * Recibe email y code, comprueba en Neon que el código exista y no esté expirado (expires_at > NOW()).
- * Si es correcto, borra el registro usado y devuelve { success: true, token, user }.
  */
 app.post('/api/verify-code', async (req, res) => {
   try {
@@ -221,7 +207,6 @@ app.post('/api/verify-code', async (req, res) => {
     const email = String(rawEmail).trim().toLowerCase();
     const cleanCode = String(code).trim();
 
-    // 1. Comprobar en Neon que el código exista y no esté expirado
     const query = `
       SELECT id, email, code, expires_at 
       FROM verification_codes 
@@ -237,10 +222,8 @@ app.post('/api/verify-code', async (req, res) => {
       });
     }
 
-    // 2. Si es correcto, borrar el registro usado
     await pool.query('DELETE FROM verification_codes WHERE email = $1', [email]);
 
-    // 3. Obtener o crear perfil del usuario para devolver sesión
     let userRes = await pool.query('SELECT id, nombre, apellido, correo FROM usuarios WHERE correo = $1', [email]);
     let user;
 
@@ -281,7 +264,7 @@ app.post('/api/verify-code', async (req, res) => {
 });
 
 // ----------------------------------------------------------------------------
-// 3. ENDPOINTS ADICIONALES (Compatibilidad Frontend & Checkout)
+// 3. ENDPOINTS ADICIONALES
 // ----------------------------------------------------------------------------
 
 app.post('/api/auth/register', (req, res, next) => {
@@ -302,44 +285,6 @@ app.get('/api/auth/me', (req, res) => {
   res.json({ success: true });
 });
 
-// Creación de preferencia de Mercado Pago
-app.post('/api/crear-preferencia', async (req, res) => {
-  try {
-    if (!Preference || !process.env.MP_ACCESS_TOKEN) {
-      return res.status(503).json({ error: 'Mercado Pago no disponible.' });
-    }
-
-    const client = new MercadoPagoConfig({ accessToken: process.env.MP_ACCESS_TOKEN });
-    const preference = new Preference(client);
-
-    const { items, cliente } = req.body;
-    const mpItems = (items || []).map((item, idx) => ({
-      id: item.id || `item-${idx + 1}`,
-      title: item.title || item.nombre || 'Producto',
-      quantity: Number(item.quantity || item.cantidad || 1),
-      unit_price: Number(item.unit_price || item.precio || 0),
-      currency_id: 'ARS'
-    }));
-
-    const result = await preference.create({
-      body: {
-        items: mpItems,
-        payer: { email: cliente?.email || 'cliente@dulcesmomentos.com' },
-        back_urls: {
-          success: 'https://octima666.github.io/DulcesMomentos/?status=success',
-          failure: 'https://octima666.github.io/DulcesMomentos/?status=failure'
-        },
-        auto_return: 'approved'
-      }
-    });
-
-    return res.json({ id: result.id, init_point: result.init_point });
-  } catch (err) {
-    return res.status(500).json({ error: err.message });
-  }
-});
-
-// Endpoint de salud
 app.get('/api/health', async (req, res) => {
   try {
     await pool.query('SELECT 1');
@@ -355,10 +300,7 @@ app.get('/api/health', async (req, res) => {
 app.listen(PORT, () => {
   console.log(`\n======================================================`);
   console.log(`🍰 Pastelería Dulces Momentos - Backend`);
-  console.log(`🚀 Servidor ejecutándose en: http://localhost:${PORT}`);
-  console.log(`🔑 Endpoint Login (2FA): POST http://localhost:${PORT}/api/login`);
-  console.log(`📝 Endpoint Register (2FA): POST http://localhost:${PORT}/api/register`);
-  console.log(`🛡️ Endpoint Verify 2FA: POST http://localhost:${PORT}/api/verify-code`);
+  console.log(`🚀 Servidor ejecutándose en puerto: ${PORT}`);
   console.log(`======================================================\n`);
 });
 

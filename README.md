@@ -63,7 +63,9 @@ MP_ACCESS_TOKEN=tu_access_token_aqui
    npm start
    ```
 
-El servidor estará escuchando en `http://localhost:3000`.
+En desarrollo local, el servidor escucha en `http://localhost:3000`.
+En producción, la API oficial en Render se encuentra activa en:
+`https://dulces-momentos-backend.onrender.com`
 
 ---
 

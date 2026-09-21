@@ -1,20 +1,17 @@
 /**
  * ============================================================================
  * PASTELERÍA "DULCES MOMENTOS" - MÓDULO DE CORREO (mailer.js)
- * Envío de correos 2FA vía Nodemailer + Gmail SMTP
+ * Envío de correos 2FA vía Resend (API HTTP, sin problemas de puertos SMTP)
  * ============================================================================
  */
 
-const nodemailer = require('nodemailer');
+const { Resend } = require('resend');
 
-// Configuración del servicio SMTP de Gmail usando variables de entorno
-const transporter = nodemailer.createTransport({
-  service: 'gmail',
-  auth: {
-    user: process.env.EMAIL_USER, // joalugo45@gmail.com
-    pass: process.env.EMAIL_PASS  // wbumziuonzjdflqk
-  }
-});
+const resend = new Resend(process.env.RESEND_API_KEY);
+
+// Remitente: debe ser de un dominio verificado en Resend (ver instrucciones abajo).
+// Mientras el dominio no esté verificado, usá 'onboarding@resend.dev' para pruebas.
+const FROM_EMAIL = process.env.EMAIL_FROM || 'Dulces Momentos <onboarding@resend.dev>';
 
 /**
  * Función principal para enviar códigos de verificación PIN (2FA)
@@ -44,24 +41,28 @@ async function sendVerificationEmail(email, code, options = {}) {
     </div>
   `;
 
-  const mailOptions = {
-    from: `"Dulces Momentos" <${process.env.EMAIL_USER}>`,
-    to: email,
-    subject: subject,
-    html: htmlContent
-  };
-
   try {
-    const info = await transporter.sendMail(mailOptions);
-    console.log(`[Nodemailer] ✅ Correo enviado exitosamente a: ${email} (ID: ${info.messageId})`);
+    const { data, error } = await resend.emails.send({
+      from: FROM_EMAIL,
+      to: email,
+      subject: subject,
+      html: htmlContent
+    });
+
+    if (error) {
+      console.error('[Resend Error]:', error);
+      throw new Error(error.message || 'Error al enviar el correo con Resend.');
+    }
+
+    console.log(`[Resend] ✅ Correo enviado exitosamente a: ${email} (ID: ${data.id})`);
     return true;
   } catch (error) {
-    console.error('[Nodemailer Error]:', error);
+    console.error('[Resend Error]:', error);
     throw error;
   }
 }
 
-module.exports = { 
+module.exports = {
   sendVerificationEmail,
   sendVerificationCode: sendVerificationEmail
 };

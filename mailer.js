@@ -61,4 +61,7 @@ async function sendVerificationEmail(email, code, options = {}) {
   }
 }
 
-module.exports = { sendVerificationEmail };
+module.exports = { 
+  sendVerificationEmail,
+  sendVerificationCode: sendVerificationEmail
+};

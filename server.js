@@ -16,6 +16,15 @@ try {
   console.warn('[MercadoPago] Módulo no disponible o no configurado.');
 }
 
+// Utilidades para el pago con QR (API de Órdenes de Mercado Pago)
+const crypto = require('crypto');
+let QRCode;
+try {
+  QRCode = require('qrcode');
+} catch (e) {
+  console.warn('[QRCode] Módulo "qrcode" no instalado. Corré: npm install qrcode');
+}
+
 const app = express();
 const PORT = process.env.PORT || 3000;
 const JWT_SECRET = process.env.JWT_SECRET || 'dulces_momentos_secret_key_2026_super_secure_jwt_token!';
@@ -305,8 +314,42 @@ app.post('/api/auth/logout', (req, res) => {
   res.json({ success: true, message: 'Sesión cerrada.' });
 });
 
-app.get('/api/auth/me', (req, res) => {
-  res.json({ success: true });
+/**
+ * GET /api/auth/me
+ * Valida el token JWT guardado en el frontend (localStorage) y devuelve
+ * los datos del usuario. Esto es lo que permite mantener la sesión
+ * iniciada al refrescar la página o volver a abrir la app.
+ */
+app.get('/api/auth/me', async (req, res) => {
+  try {
+    const authHeader = req.headers.authorization || '';
+    const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : null;
+
+    if (!token) {
+      return res.status(401).json({ success: false, error: 'Token no proporcionado.' });
+    }
+
+    let payload;
+    try {
+      payload = jwt.verify(token, JWT_SECRET);
+    } catch (err) {
+      return res.status(401).json({ success: false, error: 'Token inválido o expirado.' });
+    }
+
+    const result = await pool.query(
+      'SELECT id, nombre, apellido, correo FROM usuarios WHERE id = $1',
+      [payload.id]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(401).json({ success: false, error: 'Usuario no encontrado.' });
+    }
+
+    return res.json({ success: true, user: result.rows[0] });
+  } catch (error) {
+    console.error('[Error en /api/auth/me]:', error);
+    return res.status(500).json({ success: false, error: 'Error al verificar la sesión.' });
+  }
 });
 
 // ============================================================================
@@ -350,6 +393,135 @@ app.post('/api/crear-preferencia', async (req, res) => {
   }
 });
 
+/**
+ * POST /api/crear-pago-qr
+ * Crea una orden de pago con QR dinámico (API de Órdenes de Mercado Pago).
+ * Devuelve el string qr_data (EMVCo) y una imagen PNG en base64 lista para mostrar.
+ */
+app.post('/api/crear-pago-qr', async (req, res) => {
+  try {
+    if (!process.env.MP_ACCESS_TOKEN) {
+      return res.status(503).json({ success: false, error: 'Mercado Pago no configurado (falta MP_ACCESS_TOKEN).' });
+    }
+
+    const { items, external_reference, descripcion } = req.body;
+
+    if (!Array.isArray(items) || items.length === 0) {
+      return res.status(400).json({ success: false, error: 'Debes enviar al menos un producto en "items".' });
+    }
+
+    // Calcular el total (debe ser un número entero, sin decimales)
+    const totalAmount = items.reduce((sum, item) => {
+      const precio = Number(item.unit_price ?? item.precio ?? 0);
+      const cantidad = Number(item.quantity ?? item.cantidad ?? 1);
+      return sum + precio * cantidad;
+    }, 0);
+
+    if (!totalAmount || totalAmount <= 0) {
+      return res.status(400).json({ success: false, error: 'El monto total debe ser mayor a 0.' });
+    }
+
+    const orderResponse = await fetch('https://api.mercadopago.com/v1/orders', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${process.env.MP_ACCESS_TOKEN}`,
+        'X-Idempotency-Key': crypto.randomUUID(),
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        type: 'qr',
+        total_amount: String(Math.round(totalAmount)),
+        external_reference: external_reference || `PEDIDO-${Date.now()}`,
+        description: (descripcion || 'Compra en Dulces Momentos').slice(0, 150),
+        // La API no permite borrar la orden, por eso conviene poner expiración
+        expiration_date: new Date(Date.now() + 30 * 60 * 1000).toISOString()
+      })
+    });
+
+    const orderData = await orderResponse.json();
+
+    if (!orderResponse.ok) {
+      console.error('[MercadoPago QR Error]:', orderData);
+      return res.status(orderResponse.status).json({
+        success: false,
+        error: 'No se pudo crear la orden de pago QR.',
+        details: orderData
+      });
+    }
+
+    // Generar la imagen del QR a partir del string qr_data (formato EMVCo)
+    let qrImage = null;
+    if (QRCode && orderData.qr_data) {
+      qrImage = await QRCode.toDataURL(orderData.qr_data);
+    }
+
+    console.log(`[MercadoPago QR] ✅ Orden creada: ${orderData.id}`);
+
+    return res.status(201).json({
+      success: true,
+      order_id: orderData.id,
+      qr_data: orderData.qr_data,     // string EMVCo, por si querés generar el QR en el frontend
+      qr_image: qrImage               // data:image/png;base64,... listo para <img src="...">
+    });
+
+  } catch (error) {
+    console.error('[Error en /api/crear-pago-qr]:', error);
+    return res.status(500).json({ success: false, error: 'Error al crear el pago con QR.', details: error.message });
+  }
+});
+
+/**
+ * GET /api/estado-pago-qr/:orderId
+ * Consulta el estado de una orden QR (útil para hacer polling desde el frontend
+ * mientras el cliente escanea y paga).
+ */
+app.get('/api/estado-pago-qr/:orderId', async (req, res) => {
+  try {
+    if (!process.env.MP_ACCESS_TOKEN) {
+      return res.status(503).json({ success: false, error: 'Mercado Pago no configurado.' });
+    }
+
+    const { orderId } = req.params;
+
+    const response = await fetch(`https://api.mercadopago.com/v1/orders/${orderId}`, {
+      headers: { 'Authorization': `Bearer ${process.env.MP_ACCESS_TOKEN}` }
+    });
+    const data = await response.json();
+
+    if (!response.ok) {
+      return res.status(response.status).json({ success: false, error: 'No se pudo consultar la orden.', details: data });
+    }
+
+    return res.json({ success: true, status: data.status, order: data });
+
+  } catch (error) {
+    console.error('[Error en /api/estado-pago-qr]:', error);
+    return res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+/**
+ * POST /api/webhook-mercadopago
+ * Mercado Pago llama a esta URL cuando cambia el estado de un pago/orden.
+ * Configurá esta URL (https://tu-dominio.com/api/webhook-mercadopago) en:
+ * https://www.mercadopago.com.ar/developers/panel/notifications/webhooks
+ */
+app.post('/api/webhook-mercadopago', async (req, res) => {
+  try {
+    console.log('[Webhook MercadoPago] Notificación recibida:', JSON.stringify(req.body));
+
+    // Acá es donde deberías:
+    // 1. Identificar la orden/pago según req.body (topic/type + data.id)
+    // 2. Consultar GET /api/estado-pago-qr/:orderId (o GET /v1/orders/:id directo)
+    // 3. Si status === 'processed' o 'closed', marcar el pedido como pagado en tu DB
+
+    res.sendStatus(200); // Mercado Pago reintenta si no recibe 200/201
+  } catch (error) {
+    console.error('[Error en webhook Mercado Pago]:', error);
+    res.sendStatus(500);
+  }
+});
+
 // ============================================================================
 // 5. INICIO DEL SERVIDOR
 // ============================================================================
@@ -360,7 +532,9 @@ app.listen(PORT, () => {
   console.log(`🔑 Endpoint Login (2FA): POST /api/login`);
   console.log(`📝 Endpoint Register (2FA): POST /api/register`);
   console.log(`🛡️ Endpoint Verify 2FA: POST /api/verify-code`);
-  console.log(`💳 Endpoint Mercado Pago: POST /api/crear-preferencia`);
+  console.log(`💳 Endpoint Mercado Pago (Checkout Pro): POST /api/crear-preferencia`);
+  console.log(`📱 Endpoint Mercado Pago (QR): POST /api/crear-pago-qr`);
+  console.log(`🔔 Webhook Mercado Pago: POST /api/webhook-mercadopago`);
   console.log(`======================================================\n`);
 });
 

@@ -54,7 +54,11 @@ async function initTables() {
       );
     `);
 
-    console.log('[PostgreSQL] ✅ Tablas "verification_codes" y "usuarios" listas en Neon.');
+    await pool.query(`
+      ALTER TABLE usuarios ADD COLUMN IF NOT EXISTS google_id VARCHAR(100) UNIQUE;
+    `);
+
+    console.log('[PostgreSQL] ✅ Tablas "verification_codes" y "usuarios" listas en Neon (con soporte para google_id).');
   } catch (err) {
     console.error('[PostgreSQL Error inicializando tablas]:', err.message);
   }

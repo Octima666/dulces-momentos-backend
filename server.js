@@ -3,8 +3,11 @@ const express = require('express');
 const cors = require('cors');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
+const { OAuth2Client } = require('google-auth-library');
 const pool = require('./db');
 const { sendVerificationEmail, sendVerificationCode } = require('./mailer');
+
+const googleOAuthClient = new OAuth2Client();
 
 // SDK Mercado Pago (opcional para pagos)
 let MercadoPagoConfig, Preference;
@@ -55,6 +58,7 @@ app.get('/', (req, res) => {
       login: 'POST /api/login',
       register: 'POST /api/register',
       verifyCode: 'POST /api/verify-code',
+      googleAuth: 'POST /api/auth/google',
       preferenciaMP: 'POST /api/crear-preferencia'
     }
   });
@@ -352,6 +356,105 @@ app.get('/api/auth/me', async (req, res) => {
   }
 });
 
+/**
+ * POST /api/auth/google
+ * Autentica usuarios mediante Google Identity Services (ID Token).
+ * Verifica el token con OAuth2Client y sincroniza el usuario en PostgreSQL (Neon).
+ */
+app.post('/api/auth/google', async (req, res) => {
+  try {
+    const { credential } = req.body;
+
+    if (!credential) {
+      return res.status(401).json({
+        success: false,
+        error: 'Credencial de Google no proporcionada.'
+      });
+    }
+
+    if (!process.env.GOOGLE_CLIENT_ID) {
+      console.error('[Google OAuth] Error: GOOGLE_CLIENT_ID no configurado en variables de entorno.');
+      return res.status(500).json({
+        success: false,
+        error: 'El servicio de autenticación con Google no está configurado.'
+      });
+    }
+
+    // 1. Verificar el ID Token oficial de Google
+    let ticket;
+    try {
+      ticket = await googleOAuthClient.verifyIdToken({
+        idToken: credential,
+        audience: process.env.GOOGLE_CLIENT_ID
+      });
+    } catch (verifyErr) {
+      console.error('[Google OAuth] Error al verificar ID Token:', verifyErr.message);
+      return res.status(401).json({
+        success: false,
+        error: 'Token de Google inválido o expirado.'
+      });
+    }
+
+    const payload = ticket.getPayload();
+
+    // 2. Rechazar con 401 si no hay email o email_verified es false
+    if (!payload || !payload.email || !payload.email_verified) {
+      return res.status(401).json({
+        success: false,
+        error: 'Correo de Google no verificado o inválido.'
+      });
+    }
+
+    // 3. Normalizar correo y campos de nombre/apellido (máx 50 caracteres)
+    const email = String(payload.email).trim().toLowerCase();
+    const fallbackLocal = email.split('@')[0] || 'Cliente';
+    const nombre = String(payload.given_name || fallbackLocal).trim().slice(0, 50) || 'Cliente';
+    const apellido = String(payload.family_name || 'Cliente').trim().slice(0, 50) || 'Cliente';
+    const googleId = String(payload.sub || '');
+
+    // 4. INSERT ... ON CONFLICT (correo) DO UPDATE SET google_id = COALESCE(...)
+    // Si ya existía por email/PIN se le vincula google_id en vez de duplicarla
+    const query = `
+      INSERT INTO usuarios (nombre, apellido, correo, password_hash, google_id)
+      VALUES ($1, $2, $3, $4, $5)
+      ON CONFLICT (correo)
+      DO UPDATE SET google_id = COALESCE(usuarios.google_id, EXCLUDED.google_id)
+      RETURNING id, nombre, apellido, correo;
+    `;
+    const result = await pool.query(query, [nombre, apellido, email, 'google_oauth', googleId]);
+    const user = result.rows[0];
+
+    // 5. Firmar JWT con misma lógica y JWT_SECRET que verifyHandler (expiresIn 7d)
+    const token = jwt.sign(
+      { id: user.id, nombre: user.nombre, apellido: user.apellido, correo: user.correo },
+      JWT_SECRET,
+      { expiresIn: '7d' }
+    );
+
+    console.log(`[Google OAuth] ✅ Usuario autenticado exitosamente: ${user.correo}`);
+
+    // Respuesta con EXACTAMENTE el mismo formato que POST /api/verify-code
+    return res.status(200).json({
+      success: true,
+      message: 'Inicio de sesión con Google exitoso. ¡Bienvenido/a a Dulces Momentos!',
+      token,
+      user: {
+        id: user.id,
+        nombre: user.nombre,
+        apellido: user.apellido,
+        correo: user.correo
+      }
+    });
+
+  } catch (error) {
+    console.error('[Error en POST /api/auth/google]:', error.message);
+    return res.status(401).json({
+      success: false,
+      error: 'Error al procesar la autenticación con Google.'
+    });
+  }
+});
+
 // ============================================================================
 // 4. PASARELA DE PAGOS (Mercado Pago)
 // ============================================================================
@@ -532,6 +635,7 @@ app.listen(PORT, () => {
   console.log(`🔑 Endpoint Login (2FA): POST /api/login`);
   console.log(`📝 Endpoint Register (2FA): POST /api/register`);
   console.log(`🛡️ Endpoint Verify 2FA: POST /api/verify-code`);
+  console.log(`🌐 Endpoint Google Auth: POST /api/auth/google`);
   console.log(`💳 Endpoint Mercado Pago (Checkout Pro): POST /api/crear-preferencia`);
   console.log(`📱 Endpoint Mercado Pago (QR): POST /api/crear-pago-qr`);
   console.log(`🔔 Webhook Mercado Pago: POST /api/webhook-mercadopago`);

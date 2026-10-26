@@ -11,7 +11,7 @@ Servidor backend robusto y escalable para la pastelería boutique **Dulces Momen
 - **Base de Datos:** PostgreSQL en [Neon Tech](https://neon.tech)
 - **Driver DB:** `pg` (Pool de conexiones con SSL)
 - **Correos Electrónicos:** Nodemailer (Plantilla HTML personalizada con estética oscura y rosa neón)
-- **Autenticación:** Sistema de seguridad de doble factor (2FA) con PIN de 6 dígitos
+- **Autenticación:** Sistema de seguridad de doble factor (2FA) con PIN de 6 dígitos e inicio de sesión con Google (`google-auth-library`)
 - **Seguridad:** Encriptación de contraseñas con BcryptJS y tokens de sesión JWT
 - **Pasarela de Pagos:** Mercado Pago SDK v2 (Oficial)
 - **CORS:** Configuración segura de orígenes cruzados
@@ -37,6 +37,9 @@ JWT_SECRET=tu_clave_secreta_jwt_aqui
 
 # Mercado Pago SDK v2
 MP_ACCESS_TOKEN=tu_access_token_aqui
+
+# Google Identity Services
+GOOGLE_CLIENT_ID=tu_google_client_id.apps.googleusercontent.com
 ```
 
 ---
@@ -77,6 +80,7 @@ En producción, la API oficial en Render se encuentra activa en:
 | `POST` | `/api/login` | Solicita acceso por email, genera PIN de 6 dígitos con expiración de 10 min y lo envía por correo. |
 | `POST` | `/api/register` | Registra usuario nuevo en Neon y envía PIN de 6 dígitos para verificación de cuenta. |
 | `POST` | `/api/verify-code` | Valida el PIN de 6 dígitos (`expires_at > NOW()`), elimina el código usado y devuelve token de sesión. |
+| `POST` | `/api/auth/google` | Autentica con Google Identity Services (ID Token) y devuelve sesión JWT sin requerir PIN. |
 
 ### Pagos y Sistema
 | Método | Endpoint | Descripción |

@@ -7,7 +7,8 @@ const { OAuth2Client } = require('google-auth-library');
 const pool = require('./db');
 const { sendVerificationEmail, sendVerificationCode } = require('./mailer');
 
-const googleOAuthClient = new OAuth2Client();
+// Crear el cliente de Google OAuth2 usando GOOGLE_CLIENT_ID del entorno
+const googleOAuthClient = new OAuth2Client(process.env.GOOGLE_CLIENT_ID || '');
 
 // SDK Mercado Pago (opcional para pagos)
 let MercadoPagoConfig, Preference;
@@ -30,7 +31,19 @@ try {
 
 const app = express();
 const PORT = process.env.PORT || 3000;
-const JWT_SECRET = process.env.JWT_SECRET || 'dulces_momentos_secret_key_2026_super_secure_jwt_token!';
+
+// ============================================================================
+// JWT_SECRET es OBLIGATORIO en producción: no se usa valor por defecto.
+// Si falta, el servidor se detiene con un mensaje claro.
+// ============================================================================
+if (!process.env.JWT_SECRET) {
+  console.error(
+    '[FATAL] La variable de entorno JWT_SECRET no está definida.\n' +
+    '        Agrega JWT_SECRET=<clave-larga-aleatoria> en tu archivo .env'
+  );
+  process.exit(1);
+}
+const JWT_SECRET = process.env.JWT_SECRET;
 
 // ============================================================================
 // 1. MIDDLEWARES & CORS
@@ -43,6 +56,51 @@ app.use(cors({
 app.use(express.json());
 
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+// ============================================================================
+// PERMISOS DE ADMINISTRADOR
+// ADMIN_EMAILS: lista separada por comas en .env, con valor por defecto.
+// ============================================================================
+const ADMIN_EMAILS = (process.env.ADMIN_EMAILS || 'dulcesmomentos1112@gmail.com')
+  .split(',')
+  .map(e => e.trim().toLowerCase())
+  .filter(Boolean);
+
+/**
+ * Devuelve true si el correo correspond a un administrador.
+ * Comparación case-insensitive.
+ */
+const esAdminEmail = (email) => {
+  if (!email) return false;
+  return ADMIN_EMAILS.includes(String(email).trim().toLowerCase());
+};
+
+/**
+ * Middleware que protege rutas de administrador.
+ * 401 si no hay token válido, 403 si el usuario no es admin.
+ */
+const requireAdmin = (req, res, next) => {
+  const authHeader = req.headers.authorization || '';
+  const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : null;
+
+  if (!token) {
+    return res.status(401).json({ success: false, error: 'Token de autorización no proporcionado.' });
+  }
+
+  let payload;
+  try {
+    payload = jwt.verify(token, JWT_SECRET);
+  } catch (err) {
+    return res.status(401).json({ success: false, error: 'Token inválido o expirado.' });
+  }
+
+  if (!esAdminEmail(payload.correo)) {
+    return res.status(403).json({ success: false, error: 'Acceso denegado: se requieren permisos de administrador.' });
+  }
+
+  req.user = payload;
+  next();
+};
 
 // ============================================================================
 // 2. RUTAS BASE & SALUD
@@ -256,27 +314,30 @@ const verifyHandler = async (req, res) => {
     if (isRegister && userData) {
       const { nombre, apellido, hash } = userData;
       const newUser = await pool.query(
-        'INSERT INTO usuarios (nombre, apellido, correo, password_hash) VALUES ($1, $2, $3, $4) ON CONFLICT (correo) DO UPDATE SET nombre = EXCLUDED.nombre RETURNING id, nombre, apellido, correo',
+        'INSERT INTO usuarios (nombre, apellido, correo, password_hash) VALUES ($1, $2, $3, $4) ON CONFLICT (correo) DO UPDATE SET nombre = EXCLUDED.nombre RETURNING id, nombre, apellido, correo, rol',
         [nombre, apellido, cleanEmail, hash]
       );
       user = newUser.rows[0];
     } else {
-      const existingUser = await pool.query('SELECT id, nombre, apellido, correo FROM usuarios WHERE correo = $1', [cleanEmail]);
+      const existingUser = await pool.query('SELECT id, nombre, apellido, correo, rol FROM usuarios WHERE correo = $1', [cleanEmail]);
       if (existingUser.rows.length > 0) {
         user = existingUser.rows[0];
       } else {
         const defaultName = cleanEmail.split('@')[0];
         const inserted = await pool.query(
-          'INSERT INTO usuarios (nombre, apellido, correo, password_hash) VALUES ($1, $2, $3, $4) RETURNING id, nombre, apellido, correo',
+          'INSERT INTO usuarios (nombre, apellido, correo, password_hash) VALUES ($1, $2, $3, $4) RETURNING id, nombre, apellido, correo, rol',
           [defaultName, 'Cliente', cleanEmail, 'verified_via_2fa']
         );
         user = inserted.rows[0];
       }
     }
 
-    // 4. Generar token de sesión JWT
+    // 4. Determinar rol: admin si está en ADMIN_EMAILS, si no usar el de la DB o 'cliente'
+    const rolFinal = esAdminEmail(user.correo) ? 'admin' : (user.rol || 'cliente');
+
+    // 5. Generar token de sesión JWT con rol incluido
     const token = jwt.sign(
-      { id: user.id, nombre: user.nombre, apellido: user.apellido, correo: user.correo },
+      { id: user.id, nombre: user.nombre, apellido: user.apellido, correo: user.correo, rol: rolFinal },
       JWT_SECRET,
       { expiresIn: '7d' }
     );
@@ -287,7 +348,7 @@ const verifyHandler = async (req, res) => {
       success: true,
       message: 'Verificación exitosa. ¡Bienvenido/a a Dulces Momentos!',
       token,
-      user
+      user: { id: user.id, nombre: user.nombre, apellido: user.apellido, correo: user.correo, rol: rolFinal }
     });
 
   } catch (error) {
@@ -341,7 +402,7 @@ app.get('/api/auth/me', async (req, res) => {
     }
 
     const result = await pool.query(
-      'SELECT id, nombre, apellido, correo FROM usuarios WHERE id = $1',
+      'SELECT id, nombre, apellido, correo, rol FROM usuarios WHERE id = $1',
       [payload.id]
     );
 
@@ -349,7 +410,11 @@ app.get('/api/auth/me', async (req, res) => {
       return res.status(401).json({ success: false, error: 'Usuario no encontrado.' });
     }
 
-    return res.json({ success: true, user: result.rows[0] });
+    const user = result.rows[0];
+    // Rol definitivo: admin si está en ADMIN_EMAILS, si no el de la DB o 'cliente'
+    const rolFinal = esAdminEmail(user.correo) ? 'admin' : (user.rol || 'cliente');
+
+    return res.json({ success: true, user: { ...user, rol: rolFinal } });
   } catch (error) {
     console.error('[Error en /api/auth/me]:', error);
     return res.status(500).json({ success: false, error: 'Error al verificar la sesión.' });
@@ -413,20 +478,23 @@ app.post('/api/auth/google', async (req, res) => {
     const googleId = String(payload.sub || '');
 
     // 4. INSERT ... ON CONFLICT (correo) DO UPDATE SET google_id = COALESCE(...)
-    // Si ya existía por email/PIN se le vincula google_id en vez de duplicarla
+    // Si ya exista por email/PIN se le vincula google_id en vez de duplicarla
     const query = `
       INSERT INTO usuarios (nombre, apellido, correo, password_hash, google_id)
       VALUES ($1, $2, $3, $4, $5)
       ON CONFLICT (correo)
       DO UPDATE SET google_id = COALESCE(usuarios.google_id, EXCLUDED.google_id)
-      RETURNING id, nombre, apellido, correo;
+      RETURNING id, nombre, apellido, correo, rol;
     `;
     const result = await pool.query(query, [nombre, apellido, email, 'google_oauth', googleId]);
     const user = result.rows[0];
 
-    // 5. Firmar JWT con misma lógica y JWT_SECRET que verifyHandler (expiresIn 7d)
+    // 5. Determinar rol: admin si está en ADMIN_EMAILS, si no el de la DB o 'cliente'
+    const rolFinal = esAdminEmail(user.correo) ? 'admin' : (user.rol || 'cliente');
+
+    // 6. Firmar JWT con rol incluido (mismo formato que verifyHandler, expiresIn 7d)
     const token = jwt.sign(
-      { id: user.id, nombre: user.nombre, apellido: user.apellido, correo: user.correo },
+      { id: user.id, nombre: user.nombre, apellido: user.apellido, correo: user.correo, rol: rolFinal },
       JWT_SECRET,
       { expiresIn: '7d' }
     );
@@ -442,7 +510,8 @@ app.post('/api/auth/google', async (req, res) => {
         id: user.id,
         nombre: user.nombre,
         apellido: user.apellido,
-        correo: user.correo
+        correo: user.correo,
+        rol: rolFinal
       }
     });
 
@@ -456,7 +525,30 @@ app.post('/api/auth/google', async (req, res) => {
 });
 
 // ============================================================================
-// 4. PASARELA DE PAGOS (Mercado Pago)
+// 4. ENDPOINT ADMIN KDS
+// ============================================================================
+
+/**
+ * GET /api/admin/kds/verificar
+ * Verifica que el usuario autenticado tenga permisos de administrador.
+ * Usado por el frontend para proteger el acceso al panel de Cocina (KDS).
+ * Requiere: Authorization: Bearer <token>
+ * Respuesta: { success: true, user: { id, nombre, correo, rol: 'admin' } }
+ */
+app.get('/api/admin/kds/verificar', requireAdmin, (req, res) => {
+  return res.json({
+    success: true,
+    user: {
+      id: req.user.id,
+      nombre: req.user.nombre,
+      correo: req.user.correo,
+      rol: 'admin'
+    }
+  });
+});
+
+// ============================================================================
+// 5. PASARELA DE PAGOS (Mercado Pago)
 // ============================================================================
 
 app.post('/api/crear-preferencia', async (req, res) => {

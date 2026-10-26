@@ -58,7 +58,12 @@ async function initTables() {
       ALTER TABLE usuarios ADD COLUMN IF NOT EXISTS google_id VARCHAR(100) UNIQUE;
     `);
 
-    console.log('[PostgreSQL] ✅ Tablas "verification_codes" y "usuarios" listas en Neon (con soporte para google_id).');
+    // Columna de rol para diferenciar administradores de clientes
+    await pool.query(`
+      ALTER TABLE usuarios ADD COLUMN IF NOT EXISTS rol VARCHAR(20) DEFAULT 'cliente';
+    `);
+
+    console.log('[PostgreSQL] ✅ Tablas "verification_codes" y "usuarios" listas en Neon (con soporte para google_id y rol).');
   } catch (err) {
     console.error('[PostgreSQL Error inicializando tablas]:', err.message);
   }

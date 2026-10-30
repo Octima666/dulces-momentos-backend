@@ -94,11 +94,12 @@ const requireAdmin = (req, res, next) => {
     return res.status(401).json({ success: false, error: 'Token inválido o expirado.' });
   }
 
-  if (!esAdminEmail(payload.correo)) {
+  const emailUsuario = payload.correo || payload.email;
+  if (!esAdminEmail(emailUsuario)) {
     return res.status(403).json({ success: false, error: 'Acceso denegado: se requieren permisos de administrador.' });
   }
 
-  req.user = payload;
+  req.user = { ...payload, correo: emailUsuario };
   next();
 };
 
@@ -402,8 +403,8 @@ app.get('/api/auth/me', async (req, res) => {
     }
 
     const result = await pool.query(
-      'SELECT id, nombre, apellido, correo, rol FROM usuarios WHERE id = $1',
-      [payload.id]
+      'SELECT id, nombre, apellido, correo, rol FROM usuarios WHERE id = $1 OR correo = $2',
+      [payload.id || 0, String(payload.correo || payload.email || '').trim().toLowerCase()]
     );
 
     if (result.rows.length === 0) {

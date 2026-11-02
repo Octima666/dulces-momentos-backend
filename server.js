@@ -595,23 +595,62 @@ app.get('/api/admin/kds/verificar', requireAdmin, (req, res) => {
 // 5. PASARELA DE PAGOS (Mercado Pago)
 // ============================================================================
 
-app.post('/api/crear-preferencia', async (req, res) => {
+app.post('/api/crear-preferencia', requireAuth, async (req, res) => {
   try {
     if (!Preference || !process.env.MP_ACCESS_TOKEN) {
-      return res.status(503).json({ error: 'Mercado Pago no configurado o token no definido.' });
+      return res.status(503).json({ success: false, error: 'Mercado Pago no configurado o token no definido.' });
     }
+
+    const { items, cliente } = req.body;
+
+    if (!Array.isArray(items) || items.length === 0) {
+      return res.status(400).json({ success: false, error: 'Debés enviar al menos un producto en "items".' });
+    }
+
+    // Validar que producto_id sea entero positivo
+    for (const item of items) {
+      const pid = Number(item.producto_id);
+      const cantidad = Number(item.cantidad ?? item.quantity ?? 1);
+      if (!Number.isInteger(pid) || pid <= 0) {
+        return res.status(400).json({ success: false, error: `producto_id inválido: ${item.producto_id}` });
+      }
+      if (!Number.isInteger(cantidad) || cantidad < 1 || cantidad > 50) {
+        return res.status(400).json({ success: false, error: 'La cantidad debe ser un entero entre 1 y 50.' });
+      }
+    }
+
+    // Precios y nombres SIEMPRE desde la DB — se ignoran los del cliente
+    const ids = items.map(i => Number(i.producto_id));
+    const { rows: productos } = await pool.query(
+      'SELECT id, nombre, precio FROM productos WHERE id = ANY($1) AND activo = TRUE',
+      [ids]
+    );
+
+    if (productos.length !== ids.length) {
+      const encontrados = productos.map(p => p.id);
+      const faltantes = ids.filter(id => !encontrados.includes(id));
+      return res.status(400).json({
+        success: false,
+        error: `Productos no encontrados o inactivos: ${faltantes.join(', ')}.`
+      });
+    }
+
+    const mapaProductos = Object.fromEntries(productos.map(p => [p.id, p]));
+
+    const mpItems = items.map(item => {
+      const prod = mapaProductos[Number(item.producto_id)];
+      const cantidad = Number(item.cantidad ?? item.quantity ?? 1);
+      return {
+        id: String(prod.id),
+        title: prod.nombre,
+        quantity: cantidad,
+        unit_price: Number(prod.precio), // Checkout Pro espera number
+        currency_id: 'ARS'
+      };
+    });
 
     const client = new MercadoPagoConfig({ accessToken: process.env.MP_ACCESS_TOKEN });
     const preference = new Preference(client);
-
-    const { items, cliente } = req.body;
-    const mpItems = (items || []).map((item, idx) => ({
-      id: item.id || `item-${idx + 1}`,
-      title: item.title || item.nombre || 'Producto Dulces Momentos',
-      quantity: Number(item.quantity || item.cantidad || 1),
-      unit_price: Number(item.unit_price || item.precio || 0),
-      currency_id: 'ARS'
-    }));
 
     const result = await preference.create({
       body: {
@@ -625,10 +664,10 @@ app.post('/api/crear-preferencia', async (req, res) => {
       }
     });
 
-    return res.json({ id: result.id, init_point: result.init_point });
+    return res.json({ success: true, id: result.id, init_point: result.init_point });
   } catch (err) {
     console.error('[Error en /api/crear-preferencia]:', err);
-    return res.status(500).json({ error: err.message });
+    return res.status(500).json({ success: false, error: err.message });
   }
 });
 
@@ -652,12 +691,16 @@ const generarExternalRef = () =>
 /**
  * POST /api/crear-pago-qr  (requiere JWT)
  *
- * Body: { items: [{ producto_id: number, cantidad: number }] }
+ * Body: { items: [{ producto_id: number, cantidad: number }], delivery?: boolean }
  *
+ * - producto_id debe ser un entero positivo; en caso contrario → 400.
+ * - Ítems con el mismo producto_id se unifican sumando cantidades.
  * - Precio y total SIEMPRE desde la DB (nunca desde el body).
- * - Cantidad: entero entre 1 y 50.
+ * - Cantidad por ítem: entero entre 1 y 50.
+ * - Si delivery=true, se suma DELIVERY_FEE (default 1500) al total.
  * - Crea orden en MP con type "qr" y mode "dynamic".
- * - Genera imagen PNG del QR en base64 con la lib `qrcode`.
+ * - El QR viene en orderData.type_response.qr_data; si no está, 502.
+ * - Nunca responde success con qr_image null.
  * - Guarda el pedido en estado "pendiente".
  * - Responde { success, order_id, external_reference, total, qr_image }.
  * - Errores de MP solo al log; el cliente recibe mensaje genérico.
@@ -672,24 +715,52 @@ app.post('/api/crear-pago-qr', requireAuth, async (req, res) => {
     }
 
     // ── Validar body ───────────────────────────────────────────────────────
-    const { items } = req.body;
+    const { items, delivery } = req.body;
     if (!Array.isArray(items) || items.length === 0) {
       return res.status(400).json({ success: false, error: 'Debés enviar al menos un producto en "items".' });
     }
 
-    // Validar estructura de cada ítem
+    // Validar y normalizar cada ítem; producto_id debe ser entero positivo
     for (const item of items) {
-      const cantidad = Number(item.cantidad);
-      if (!item.producto_id || !Number.isInteger(cantidad) || cantidad < 1 || cantidad > 50) {
+      const pid = Number(item.producto_id);
+      if (!Number.isInteger(pid) || pid <= 0) {
         return res.status(400).json({
           success: false,
-          error: 'Cada ítem debe tener producto_id y cantidad (entero entre 1 y 50).'
+          error: `producto_id inválido: ${item.producto_id}. Debe ser un entero positivo.`
+        });
+      }
+      const cantidad = Number(item.cantidad);
+      if (!Number.isInteger(cantidad) || cantidad < 1 || cantidad > 50) {
+        return res.status(400).json({
+          success: false,
+          error: 'La cantidad de cada ítem debe ser un entero entre 1 y 50.'
         });
       }
     }
 
+    // ── Unificar ítems con producto_id repetido (sumar cantidades) ─────────
+    const mapaItems = new Map();
+    for (const item of items) {
+      const pid = Number(item.producto_id);
+      const cantidad = Number(item.cantidad);
+      mapaItems.set(pid, (mapaItems.get(pid) || 0) + cantidad);
+    }
+    // Revalidar que las cantidades sumadas no superen 50
+    for (const [pid, cantidad] of mapaItems) {
+      if (cantidad > 50) {
+        return res.status(400).json({
+          success: false,
+          error: `La cantidad total del producto ${pid} supera el máximo permitido (50).`
+        });
+      }
+    }
+    const itemsUnificados = Array.from(mapaItems.entries()).map(([pid, cantidad]) => ({
+      producto_id: pid,
+      cantidad
+    }));
+
     // ── Obtener precios desde la DB ───────────────────────────────────────
-    const ids = items.map(i => Number(i.producto_id));
+    const ids = itemsUnificados.map(i => i.producto_id);
     const { rows: productos } = await pool.query(
       'SELECT id, nombre, precio FROM productos WHERE id = ANY($1) AND activo = TRUE',
       [ids]
@@ -707,24 +778,36 @@ app.post('/api/crear-pago-qr', requireAuth, async (req, res) => {
     // Indexar por id para acceso rápido
     const mapaProductos = Object.fromEntries(productos.map(p => [p.id, p]));
 
-    // Construir ítems para MP y calcular total
+    // Construir ítems para MP y calcular total de productos
     let totalAmount = 0;
-    const mpItems = items.map(item => {
-      const prod = mapaProductos[Number(item.producto_id)];
-      const cantidad = Number(item.cantidad);
+    const mpItems = itemsUnificados.map(item => {
+      const prod = mapaProductos[item.producto_id];
       const precioUnitario = Number(prod.precio);
-      totalAmount += precioUnitario * cantidad;
+      totalAmount += precioUnitario * item.cantidad;
 
       return {
         title: prod.nombre,
         unit_price: formatMonto(precioUnitario),   // string "0.00" requerido por MP
-        quantity: cantidad,
+        quantity: item.cantidad,
         unit_measure: 'unit'
       };
     });
 
     if (totalAmount <= 0) {
       return res.status(400).json({ success: false, error: 'El monto total debe ser mayor a 0.' });
+    }
+
+    // ── Envío (delivery) ──────────────────────────────────────────────────
+    const conDelivery = Boolean(delivery);
+    const deliveryFee = conDelivery ? Number(process.env.DELIVERY_FEE || 1500) : 0;
+    if (conDelivery) {
+      totalAmount += deliveryFee;
+      mpItems.push({
+        title: 'Envío',
+        unit_price: formatMonto(deliveryFee),
+        quantity: 1,
+        unit_measure: 'unit'
+      });
     }
 
     // ── Crear orden en Mercado Pago ───────────────────────────────────────
@@ -743,6 +826,11 @@ app.post('/api/crear-pago-qr', requireAuth, async (req, res) => {
           external_pos_id: process.env.MP_POS_EXTERNAL_ID,
           mode: 'dynamic'
         }
+      },
+      transactions: {
+        payments: [
+          { amount: formatMonto(totalAmount) }      // string "0.00", mismo total
+        ]
       }
     };
 
@@ -770,27 +858,46 @@ app.post('/api/crear-pago-qr', requireAuth, async (req, res) => {
       return res.status(502).json({ success: false, error: 'No se pudo crear la orden de pago QR en Mercado Pago.' });
     }
 
+    // ── Obtener qr_data desde type_response ──────────────────────────────
+    // La API de Órdenes devuelve el string EMVCo en type_response.qr_data.
+    const qrData = orderData?.type_response?.qr_data;
+
+    if (!qrData) {
+      // Loguear la respuesta completa para diagnóstico
+      console.error('[MercadoPago QR] qr_data no encontrado en la respuesta:', JSON.stringify(orderData));
+      return res.status(502).json({ success: false, error: 'Mercado Pago no devolvió el QR.' });
+    }
+
     // ── Generar imagen QR ─────────────────────────────────────────────────
-    // La API devuelve qr_data en el nivel raíz de la respuesta (no en type_response).
-    let qrImage = null;
-    if (QRCode && orderData.qr_data) {
-      try {
-        qrImage = await QRCode.toDataURL(orderData.qr_data);
-      } catch (qrErr) {
-        console.error('[QRCode] Error generando imagen:', qrErr.message);
-      }
+    let qrImage;
+    try {
+      if (!QRCode) throw new Error('Módulo qrcode no disponible.');
+      qrImage = await QRCode.toDataURL(qrData);
+    } catch (qrErr) {
+      console.error('[QRCode] Error generando imagen:', qrErr.message);
+      return res.status(500).json({ success: false, error: 'No se pudo generar la imagen del QR.' });
     }
 
     // ── Guardar pedido en DB ──────────────────────────────────────────────
-    const itemsSnapshot = items.map(item => {
-      const prod = mapaProductos[Number(item.producto_id)];
+    const itemsSnapshot = itemsUnificados.map(item => {
+      const prod = mapaProductos[item.producto_id];
       return {
         producto_id: prod.id,
         nombre: prod.nombre,
         precio: Number(prod.precio),
-        cantidad: Number(item.cantidad)
+        cantidad: item.cantidad
       };
     });
+
+    // Incluir ítem de envío en el snapshot si corresponde
+    if (conDelivery) {
+      itemsSnapshot.push({
+        producto_id: null,
+        nombre: 'Envío',
+        precio: deliveryFee,
+        cantidad: 1
+      });
+    }
 
     await pool.query(
       `INSERT INTO pedidos (external_reference, mp_order_id, total, items, estado, usuario_id)
@@ -804,7 +911,7 @@ app.post('/api/crear-pago-qr', requireAuth, async (req, res) => {
       ]
     );
 
-    console.log(`[MercadoPago QR] ✅ Orden creada: ${orderData.id} | ref: ${externalReference}`);
+    console.log(`[MercadoPago QR] ✅ Orden creada: ${orderData.id} | ref: ${externalReference} | delivery: ${conDelivery}`);
 
     return res.status(201).json({
       success: true,
@@ -863,6 +970,33 @@ app.get('/api/estado-pago-qr/:orderId', requireAuth, async (req, res) => {
       if (mpResponse.ok) {
         const mpData = await mpResponse.json();
         mpStatus = mpData.status || null;
+
+        // ── Auto-confirmación si el webhook falló ─────────────────────────
+        // Si MP reporta "processed" y el pedido todavía está "pendiente",
+        // verificar monto y marcarlo como pagado (idempotente).
+        if (
+          mpStatus === 'processed' &&
+          pedido.estado === 'pendiente'
+        ) {
+          const totalMP = Number(mpData.total_amount);
+          const totalDB = Number(pedido.total);
+
+          if (Math.abs(totalMP - totalDB) <= 0.01) {
+            await pool.query(
+              `UPDATE pedidos SET estado = 'pagado', paid_at = NOW()
+               WHERE id = $1 AND estado = 'pendiente'`,
+              [pedido.id]
+            );
+            pedido.estado = 'pagado';
+            pedido.paid_at = new Date();
+            console.log(`[Estado QR] ✅ Pedido ${pedido.id} auto-confirmado a "pagado" (polling).`);
+          } else {
+            console.error(
+              `[Estado QR] ⚠️ Discrepancia de monto en pedido ${pedido.id}: ` +
+              `MP=${totalMP}, DB=${totalDB}. No se auto-confirma.`
+            );
+          }
+        }
       }
     } catch (fetchErr) {
       console.warn('[MercadoPago] No se pudo consultar estado en tiempo real:', fetchErr.message);
@@ -919,8 +1053,10 @@ function validarFirmaWebhook(headers, dataId, secret) {
 
     if (!ts || !v1) return false;
 
-    // Construir el manifest según la doc oficial
-    const manifest = `id:${dataId};request-id:${xRequestId};ts:${ts};`;
+    // Construir el manifest según la doc oficial.
+    // dataId se normaliza a minúsculas porque los IDs de órdenes son alfanuméricos
+    // y MP firma siempre en minúsculas.
+    const manifest = `id:${String(dataId).toLowerCase()};request-id:${xRequestId};ts:${ts};`;
 
     // Calcular HMAC-SHA256 y comparar con timing-safe
     const expected = crypto
@@ -962,7 +1098,9 @@ app.post('/api/webhook-mercadopago', async (req, res) => {
     // Identificar el ID del recurso notificado
     const dataId = (req.query && req.query['data.id']) || body?.data?.id || '';
 
-    // Validar firma HMAC si el secret está configurado
+    // Validar firma HMAC si el secret está configurado.
+    // En producción, si el secret no está definido, rechazamos con 401
+    // para evitar procesar webhooks sin autenticar.
     const webhookSecret = process.env.MP_WEBHOOK_SECRET;
     if (webhookSecret) {
       const firmaValida = validarFirmaWebhook(req.headers, String(dataId), webhookSecret);
@@ -970,8 +1108,11 @@ app.post('/api/webhook-mercadopago', async (req, res) => {
         console.warn('[Webhook MP] ⚠️ Firma inválida rechazada.');
         return res.status(401).json({ success: false, error: 'Firma inválida.' });
       }
+    } else if (process.env.NODE_ENV === 'production') {
+      console.error('[Webhook MP] MP_WEBHOOK_SECRET no configurado en producción. Rechazando webhook.');
+      return res.status(401).json({ success: false, error: 'Webhook no autorizado: falta la clave de firma.' });
     } else {
-      console.warn('[Webhook MP] MP_WEBHOOK_SECRET no configurado — validación de firma omitida.');
+      console.warn('[Webhook MP] MP_WEBHOOK_SECRET no configurado — validación de firma omitida (solo en desarrollo).');
     }
 
     console.log('[Webhook MP] Notificación recibida. tipo:', body.type, '| id:', dataId);

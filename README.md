@@ -49,6 +49,9 @@ MP_ACCESS_TOKEN=tu_access_token_aqui
 MP_POS_EXTERNAL_ID=SUCURSAL01-CAJA01       # external_id de la caja en tu cuenta MP
 MP_WEBHOOK_SECRET=tu_webhook_secret        # Clave de firma HMAC en el panel de MP
 
+# Envío a domicilio (ARS). Se usa cuando el body incluye delivery: true
+DELIVERY_FEE=1500
+
 # CORS (coma-separado; si no está definida, permite *)
 ALLOWED_ORIGINS=https://dulcesmomentos.com.ar,https://www.dulcesmomentos.com.ar
 ```
@@ -119,8 +122,8 @@ En producción, la API oficial en Render se encuentra activa en:
 | Método | Endpoint | Auth | Descripción |
 |---|---|---|---|
 | `POST` | `/api/crear-preferencia` | — | Genera una preferencia de pago (Checkout Pro) para el carrito de compras. |
-| `POST` | `/api/crear-pago-qr` | JWT | Crea una orden de pago QR dinámico (API de Órdenes MP). Body: `{ items: [{ producto_id, cantidad }] }`. Precio y total SIEMPRE desde la DB. Responde `{ success, order_id, external_reference, total, qr_image }`. |
-| `GET` | `/api/estado-pago-qr/:orderId` | JWT | Consulta el estado de una orden QR. Solo el dueño del pedido o un admin puede acceder. |
+| `POST` | `/api/crear-pago-qr` | JWT | Crea una orden de pago QR dinámico (API de Órdenes MP). Body: `{ items: [{ producto_id, cantidad }], delivery?: boolean }`. Si `delivery: true`, suma `DELIVERY_FEE` (default \$1500) como ítem "Envío". Precio siempre desde la DB. `qr_data` se lee de `type_response.qr_data`. Nunca responde `success` con `qr_image` nulo. Responde `{ success, order_id, external_reference, total, qr_image }`. |
+| `GET` | `/api/estado-pago-qr/:orderId` | JWT | Consulta el estado de una orden QR. Solo el dueño del pedido o un admin puede acceder. Si MP devuelve `"processed"` y el monto coincide, el pedido se auto-confirma a `"pagado"` (fallback si el webhook falló). |
 | `POST` | `/api/webhook-mercadopago` | HMAC | Recibe notificaciones de MP. Valida firma `x-signature` con HMAC-SHA256. Actualiza estado del pedido en DB (`pendiente → pagado/cancelado`). Idempotente. |
 
 ### Sistema

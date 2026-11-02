@@ -86,7 +86,12 @@ ALLOWED_ORIGINS=https://dulcesmomentos.com.ar,https://www.dulcesmomentos.com.ar
    # Editá .env con tus valores reales
    ```
 
-4. **Iniciar el servidor en desarrollo:**
+4. **Poblar catálogo de productos en la base de datos:**
+   ```bash
+   npm run seed
+   ```
+
+5. **Iniciar el servidor en desarrollo:**
    ```bash
    npm run dev
    ```

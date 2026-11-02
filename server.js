@@ -717,6 +717,7 @@ app.post('/api/crear-pago-qr', requireAuth, async (req, res) => {
     // ── Validar body ───────────────────────────────────────────────────────
     const { items, delivery } = req.body;
     if (!Array.isArray(items) || items.length === 0) {
+      console.warn('[crear-pago-qr] 400: Debés enviar al menos un producto en "items".');
       return res.status(400).json({ success: false, error: 'Debés enviar al menos un producto en "items".' });
     }
 
@@ -724,6 +725,7 @@ app.post('/api/crear-pago-qr', requireAuth, async (req, res) => {
     for (const item of items) {
       const pid = Number(item.producto_id);
       if (!Number.isInteger(pid) || pid <= 0) {
+        console.warn(`[crear-pago-qr] 400: producto_id inválido: ${item.producto_id}. Debe ser un entero positivo.`);
         return res.status(400).json({
           success: false,
           error: `producto_id inválido: ${item.producto_id}. Debe ser un entero positivo.`
@@ -731,6 +733,7 @@ app.post('/api/crear-pago-qr', requireAuth, async (req, res) => {
       }
       const cantidad = Number(item.cantidad);
       if (!Number.isInteger(cantidad) || cantidad < 1 || cantidad > 50) {
+        console.warn('[crear-pago-qr] 400: La cantidad de cada ítem debe ser un entero entre 1 y 50.');
         return res.status(400).json({
           success: false,
           error: 'La cantidad de cada ítem debe ser un entero entre 1 y 50.'
@@ -748,6 +751,7 @@ app.post('/api/crear-pago-qr', requireAuth, async (req, res) => {
     // Revalidar que las cantidades sumadas no superen 50
     for (const [pid, cantidad] of mapaItems) {
       if (cantidad > 50) {
+        console.warn(`[crear-pago-qr] 400: La cantidad total del producto ${pid} supera el máximo permitido (50).`);
         return res.status(400).json({
           success: false,
           error: `La cantidad total del producto ${pid} supera el máximo permitido (50).`
@@ -769,6 +773,7 @@ app.post('/api/crear-pago-qr', requireAuth, async (req, res) => {
     if (productos.length !== ids.length) {
       const encontrados = productos.map(p => p.id);
       const faltantes = ids.filter(id => !encontrados.includes(id));
+      console.warn(`[crear-pago-qr] 400: Productos no encontrados o inactivos: ${faltantes.join(', ')}.`);
       return res.status(400).json({
         success: false,
         error: `Productos no encontrados o inactivos: ${faltantes.join(', ')}.`
@@ -794,11 +799,12 @@ app.post('/api/crear-pago-qr', requireAuth, async (req, res) => {
     });
 
     if (totalAmount <= 0) {
+      console.warn('[crear-pago-qr] 400: El monto total debe ser mayor a 0.');
       return res.status(400).json({ success: false, error: 'El monto total debe ser mayor a 0.' });
     }
 
     // ── Envío (delivery) ──────────────────────────────────────────────────
-    const conDelivery = Boolean(delivery);
+    const conDelivery = delivery === true || delivery === 'true';
     const deliveryFee = conDelivery ? Number(process.env.DELIVERY_FEE || 1500) : 0;
     if (conDelivery) {
       totalAmount += deliveryFee;

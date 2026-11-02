@@ -1,306 +1,236 @@
 # 📱 Snippet Frontend — Pago con QR Dinámico
 
-> Integrá este snippet en el frontend de Dulces Momentos (`index.html` / `app.js`).
-> Requiere que el usuario esté autenticado (JWT en `localStorage`).
+> Guía de integración oficial para el frontend de Pastelería Dulces Momentos (`index.html` / `app.js`).
+> Requiere que el usuario esté autenticado con JWT Bearer (`localStorage.getItem('token')`).
 
 ---
 
-## HTML — Botón y Modal
+## 1. Mapa de IDs Numéricos
+
+La base de datos PostgreSQL (`productos`) maneja identificadores numéricos. Si el sitio utiliza slugs o strings (como `'prod-001'`), se utiliza este mapeo explícito:
+
+```javascript
+const MAPA_PRODUCTO_IDS = {
+  'prod-001': 1, // Tarta Frutos del Bosque
+  'prod-002': 2, // Cheesecake New York Clásico
+  'prod-003': 3, // Tarta Húmeda de Chocolate Belga
+  'prod-004': 4, // Macarons Artesanales
+  'prod-005': 5, // Croissant Francés con Almendras
+  'prod-006': 6  // Box Degustación Fiesta
+};
+```
+
+---
+
+## 2. HTML — Recuadro de QR
 
 ```html
-<!-- ── Botón para abrir el modal de pago QR ── -->
-<button id="btn-pagar-qr" class="btn-primary">
-  📱 Pagar con QR
-</button>
+<!-- Contenedor del QR de Mercado Pago -->
+<div id="seccion-qr" class="p-4 rounded-2xl bg-[#1c1619] border border-brand-500/30 space-y-3.5">
+  
+  <!-- Estado Cargando -->
+  <div id="qr-estado-cargando" class="flex flex-col items-center justify-center gap-2 py-8 text-center">
+    <div class="w-8 h-8 border-2 border-brand-500 border-t-transparent rounded-full animate-spin"></div>
+    <span class="text-xs text-stone-400 font-medium">Generando código QR de pago...</span>
+  </div>
 
-<!-- ── Modal de QR ── -->
-<div id="modal-qr" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="modal-qr-title">
-  <div class="modal-content">
-    <button id="btn-cerrar-qr" class="modal-close" aria-label="Cerrar">&times;</button>
-
-    <h2 id="modal-qr-title">Escaneá para pagar</h2>
-
-    <!-- Imagen del QR generada por el backend -->
-    <div id="qr-container">
-      <img id="qr-imagen" src="" alt="Código QR de pago" width="260" height="260" />
+  <!-- Estado Esperando Pago (QR Listo) -->
+  <div id="qr-estado-esperando" class="hidden flex-col sm:flex-row items-center gap-4 text-center sm:text-left">
+    <div class="bg-white p-2 rounded-2xl shrink-0 flex items-center justify-center">
+      <img id="qr-imagen-dinamica" src="" alt="Código QR Mercado Pago" class="w-36 h-36 sm:w-40 sm:h-40 rounded-xl object-contain">
     </div>
 
-    <!-- Monto total -->
-    <p id="qr-total" class="qr-monto"></p>
-
-    <!-- Cuenta regresiva (30 minutos) -->
-    <p id="qr-countdown" class="qr-countdown">Expira en: <span id="qr-timer">30:00</span></p>
-
-    <!-- Estado en tiempo real -->
-    <p id="qr-estado" class="qr-estado">Esperando pago...</p>
-
-    <button id="btn-cancelar-qr" class="btn-secondary">Cancelar</button>
+    <div class="flex-1 space-y-2 text-xs text-stone-200 w-full">
+      <div class="flex items-center justify-between pb-1 border-b border-[#352331]">
+        <span class="font-bold text-sm text-white flex items-center gap-1.5">
+          <span>🏦</span> Escaneá para pagar
+        </span>
+        <span id="qr-cuenta-regresiva" class="text-xs font-mono font-bold text-pink-400 bg-brand-950 px-2 py-0.5 rounded border border-brand-800">30:00</span>
+      </div>
+      <p class="text-stone-400 text-[11px] leading-relaxed pt-1">
+        Escaneá este código desde la app de Mercado Pago para pagar
+        <span id="qr-monto-texto" class="font-bold text-brand-400">$ 0</span>.
+      </p>
+      <div class="flex items-center gap-2 pt-1 text-amber-400 font-semibold">
+        <span class="w-2 h-2 rounded-full bg-amber-400 animate-pulse"></span>
+        <span id="qr-estado-texto">⏳ Esperando confirmación de pago...</span>
+      </div>
+    </div>
   </div>
+
+  <!-- Estado Pago Confirmado -->
+  <div id="qr-estado-confirmado" class="hidden flex items-center gap-3 py-5 justify-center text-center">
+    <span class="text-2xl">✅</span>
+    <span id="qr-confirmado-mensaje" class="text-sm font-bold text-emerald-400">¡Pago recibido! Ya podés enviar tu pedido.</span>
+  </div>
+
+  <!-- Estado Error / Expirado -->
+  <div id="qr-estado-error" class="hidden flex-col items-center gap-2 py-5 text-center">
+    <!-- Nunca vacío: muestra data.error o 'El QR venció' -->
+    <span id="qr-error-mensaje" class="text-sm font-bold text-red-400">No pudimos generar o confirmar el QR de pago.</span>
+    <button type="button" id="btn-reintentar-qr" class="text-xs font-bold text-brand-400 hover:underline">
+      🔄 Generar un nuevo QR
+    </button>
+  </div>
+
 </div>
 ```
 
 ---
 
-## JavaScript — Lógica completa
+## 3. JavaScript Completo (`app.js`)
 
 ```javascript
-/**
- * PAGO CON QR DINÁMICO — Dulces Momentos
- * ─────────────────────────────────────────────────────────────────────────────
- * Requiere:
- *   - Usuario autenticado con JWT en localStorage ('token').
- *   - Backend con los endpoints /api/crear-pago-qr y /api/estado-pago-qr/:orderId.
- * ─────────────────────────────────────────────────────────────────────────────
- */
-
-const API_BASE = 'https://dulces-momentos-backend.onrender.com'; // ajustá según entorno
-const EXPIRACION_MS = 30 * 60 * 1000;   // 30 minutos en ms
-const POLLING_INTERVALO_MS = 4000;       // polling cada 4 segundos
+const API_BASE_URL = 'https://dulces-momentos-backend.onrender.com';
+const MAPA_PRODUCTO_IDS = {
+  'prod-001': 1,
+  'prod-002': 2,
+  'prod-003': 3,
+  'prod-004': 4,
+  'prod-005': 5,
+  'prod-006': 6
+};
 
 let pollingTimer = null;
-let cuentaRegresivaTimer = null;
-let ordenActivaId = null;
+let timerCuentaRegresiva = null;
 
-// ── Referencias al DOM ───────────────────────────────────────────────────────
-const btnPagarQR     = document.getElementById('btn-pagar-qr');
-const modalQR        = document.getElementById('modal-qr');
-const btnCerrarQR    = document.getElementById('btn-cerrar-qr');
-const btnCancelarQR  = document.getElementById('btn-cancelar-qr');
-const qrImagen       = document.getElementById('qr-imagen');
-const qrTotal        = document.getElementById('qr-total');
-const qrTimer        = document.getElementById('qr-timer');
-const qrEstado       = document.getElementById('qr-estado');
+const detenerTimerQr = () => {
+  if (timerCuentaRegresiva) {
+    clearInterval(timerCuentaRegresiva);
+    timerCuentaRegresiva = null;
+  }
+};
 
-// ── Abrir modal ──────────────────────────────────────────────────────────────
-btnPagarQR.addEventListener('click', async () => {
-  const token = localStorage.getItem('token');
+const detenerPollingPagoQr = () => {
+  if (pollingTimer) {
+    clearInterval(pollingTimer);
+    pollingTimer = null;
+  }
+};
+
+const mostrarEstadoQr = (idVisible) => {
+  ['qr-estado-cargando', 'qr-estado-esperando', 'qr-estado-confirmado', 'qr-estado-error'].forEach((id) => {
+    document.getElementById(id)?.classList.toggle('hidden', id !== idVisible);
+  });
+};
+
+const mostrarErrorEnRecuadro = (mensaje) => {
+  const errorEl = document.getElementById('qr-error-mensaje');
+  if (errorEl) {
+    errorEl.textContent = mensaje || 'No pudimos generar o confirmar el QR de pago.';
+  }
+  mostrarEstadoQr('qr-estado-error');
+};
+
+const iniciarCuentaRegresivaQr = (segundosTotales = 1800) => {
+  detenerTimerQr();
+  let restantes = segundosTotales;
+
+  const actualizarUI = () => {
+    const min = Math.floor(restantes / 60);
+    const seg = restantes % 60;
+    const txt = `${String(min).padStart(2, '0')}:${String(seg).padStart(2, '0')}`;
+    const el = document.getElementById('qr-cuenta-regresiva');
+    if (el) el.textContent = txt;
+  };
+
+  actualizarUI();
+
+  timerCuentaRegresiva = setInterval(() => {
+    restantes -= 1;
+    if (restantes <= 0) {
+      detenerTimerQr();
+      detenerPollingPagoQr();
+      mostrarErrorEnRecuadro('El QR venció');
+      return;
+    }
+    actualizarUI();
+  }, 1000);
+};
+
+const iniciarPollingPagoQr = (orderId, token) => {
+  detenerPollingPagoQr();
+
+  pollingTimer = setInterval(async () => {
+    try {
+      const resp = await fetch(`${API_BASE_URL}/api/estado-pago-qr/${orderId}`, {
+        headers: {
+          'Authorization': `Bearer ${token}`
+        }
+      });
+
+      const data = await resp.json();
+      if (!resp.ok) return;
+
+      // El backend devuelve { success: true, estado: 'pendiente' | 'pagado' | 'cancelado' }
+      if (data.estado === 'pagado') {
+        detenerPollingPagoQr();
+        detenerTimerQr();
+        const confMsg = document.getElementById('qr-confirmado-mensaje');
+        if (confMsg) confMsg.textContent = '¡Pago recibido!';
+        mostrarEstadoQr('qr-estado-confirmado');
+      } else if (data.estado === 'cancelado') {
+        detenerPollingPagoQr();
+        detenerTimerQr();
+        mostrarErrorEnRecuadro('El QR venció');
+      }
+    } catch (err) {
+      console.warn('[Polling QR] Error de red:', err.message);
+    }
+  }, 4000);
+};
+
+const generarPagoQr = async () => {
+  const token = localStorage.getItem('dulces_momentos_auth_token_v2') || localStorage.getItem('token');
   if (!token) {
     alert('Debés iniciar sesión para pagar.');
     return;
   }
 
-  // Armá el carrito según tu implementación. Ejemplo genérico:
-  const items = obtenerCarritoComoItems(); // [{ producto_id, cantidad }]
+  // Mapear items del carrito a producto_id numérico de la base de datos
+  const items = carrito.map(item => ({
+    producto_id: MAPA_PRODUCTO_IDS[item.id] || Number(item.producto_id || item.id),
+    cantidad: Number(item.cantidad)
+  }));
 
-  if (!items || items.length === 0) {
-    alert('El carrito está vacío.');
-    return;
-  }
+  const esDelivery = tipoEntrega === 'delivery';
+
+  mostrarEstadoQr('qr-estado-cargando');
 
   try {
-    btnPagarQR.disabled = true;
-    btnPagarQR.textContent = 'Generando QR...';
-
-    const resp = await fetch(`${API_BASE}/api/crear-pago-qr`, {
+    const resp = await fetch(`${API_BASE_URL}/api/crear-pago-qr`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         'Authorization': `Bearer ${token}`
       },
-      body: JSON.stringify({ items })
+      body: JSON.stringify({
+        items,
+        delivery: esDelivery
+      })
     });
 
     const data = await resp.json();
 
-    if (!data.success) {
-      alert('No se pudo generar el QR: ' + (data.error || 'Error desconocido'));
+    // Si la respuesta no es ok, nunca dejamos el recuadro vacío
+    if (!resp.ok || !data.success) {
+      const motivo = data.error || 'No se pudo generar el código QR de pago.';
+      mostrarErrorEnRecuadro(motivo);
       return;
     }
 
-    // Mostrar el QR
-    ordenActivaId = data.order_id;
-    qrImagen.src = data.qr_image;
-    qrTotal.textContent = `Total: $${Number(data.total).toLocaleString('es-AR', { minimumFractionDigits: 2 })}`;
-    qrEstado.textContent = 'Esperando pago...';
+    // Renderizar imagen del QR y total
+    const imgQr = document.getElementById('qr-imagen-dinamica');
+    const montoTexto = document.getElementById('qr-monto-texto');
+    if (imgQr) imgQr.src = data.qr_image;
+    if (montoTexto) montoTexto.textContent = `$ ${Number(data.total).toLocaleString('es-AR')}`;
 
-    abrirModal();
-    iniciarCuentaRegresiva();
-    iniciarPolling(data.order_id, token);
+    mostrarEstadoQr('qr-estado-esperando');
+    iniciarCuentaRegresivaQr(1800); // 30 minutos
+    iniciarPollingPagoQr(data.order_id, token);
 
   } catch (err) {
-    console.error('[QR] Error al crear el pago:', err);
-    alert('Ocurrió un error al generar el QR. Intentá de nuevo.');
-  } finally {
-    btnPagarQR.disabled = false;
-    btnPagarQR.textContent = '📱 Pagar con QR';
+    mostrarErrorEnRecuadro(err.message || 'Error de conexión con el servidor.');
   }
-});
-
-// ── Cerrar / cancelar ────────────────────────────────────────────────────────
-btnCerrarQR.addEventListener('click', cerrarModal);
-btnCancelarQR.addEventListener('click', cerrarModal);
-
-// Cerrar al hacer click fuera del contenido
-modalQR.addEventListener('click', (e) => {
-  if (e.target === modalQR) cerrarModal();
-});
-
-// Cerrar con Escape
-document.addEventListener('keydown', (e) => {
-  if (e.key === 'Escape' && !modalQR.classList.contains('hidden')) cerrarModal();
-});
-
-// ── Funciones auxiliares ─────────────────────────────────────────────────────
-
-function abrirModal() {
-  modalQR.classList.remove('hidden');
-  document.body.style.overflow = 'hidden';
-}
-
-function cerrarModal() {
-  modalQR.classList.add('hidden');
-  document.body.style.overflow = '';
-  detenerPolling();
-  detenerCuentaRegresiva();
-  ordenActivaId = null;
-  qrImagen.src = '';
-}
-
-/**
- * Cuenta regresiva de 30 minutos.
- * Al llegar a 0 cierra el modal con un mensaje.
- */
-function iniciarCuentaRegresiva() {
-  detenerCuentaRegresiva();
-  const fin = Date.now() + EXPIRACION_MS;
-
-  cuentaRegresivaTimer = setInterval(() => {
-    const restante = fin - Date.now();
-
-    if (restante <= 0) {
-      clearInterval(cuentaRegresivaTimer);
-      qrTimer.textContent = '00:00';
-      qrEstado.textContent = '⏰ El QR expiró. Generá uno nuevo.';
-      detenerPolling();
-      return;
-    }
-
-    const min = Math.floor(restante / 60000);
-    const seg = Math.floor((restante % 60000) / 1000);
-    qrTimer.textContent = `${String(min).padStart(2, '0')}:${String(seg).padStart(2, '0')}`;
-  }, 1000);
-}
-
-function detenerCuentaRegresiva() {
-  if (cuentaRegresivaTimer) {
-    clearInterval(cuentaRegresivaTimer);
-    cuentaRegresivaTimer = null;
-  }
-}
-
-/**
- * Polling cada 4 s para consultar el estado de la orden en el backend.
- * Para cuando recibe "pagado" o "cancelado".
- */
-function iniciarPolling(orderId, token) {
-  detenerPolling();
-
-  pollingTimer = setInterval(async () => {
-    try {
-      const resp = await fetch(`${API_BASE}/api/estado-pago-qr/${orderId}`, {
-        headers: { 'Authorization': `Bearer ${token}` }
-      });
-
-      if (!resp.ok) return; // silencioso; reintenta en 4 s
-
-      const data = await resp.json();
-      if (!data.success) return;
-
-      const estado = data.estado; // 'pendiente' | 'pagado' | 'cancelado'
-
-      if (estado === 'pagado') {
-        detenerPolling();
-        detenerCuentaRegresiva();
-        qrEstado.textContent = '✅ ¡Pago confirmado! Gracias por tu compra.';
-        // Opcional: redirigir, actualizar carrito, etc.
-        setTimeout(() => {
-          cerrarModal();
-          onPagoConfirmado(); // implementá esta función según tu app
-        }, 3000);
-
-      } else if (estado === 'cancelado') {
-        detenerPolling();
-        detenerCuentaRegresiva();
-        qrEstado.textContent = '❌ La orden fue cancelada.';
-        setTimeout(cerrarModal, 3000);
-      }
-
-    } catch (err) {
-      // Silencioso: el polling reintenta automáticamente
-      console.warn('[QR Polling] Error de red:', err.message);
-    }
-  }, POLLING_INTERVALO_MS);
-}
-
-function detenerPolling() {
-  if (pollingTimer) {
-    clearInterval(pollingTimer);
-    pollingTimer = null;
-  }
-}
-
-/**
- * Callback ejecutado cuando el pago se confirma exitosamente.
- * Adaptá esto a tu lógica de negocio (vaciar carrito, mostrar confirmación, etc.).
- */
-function onPagoConfirmado() {
-  console.log('[QR] 🎉 Pago confirmado. Actualizando estado de la app...');
-  // Ejemplo: limpiarCarrito(); mostrarMensajeExito();
-}
-
-/**
- * Devuelve el carrito actual en el formato que espera el backend.
- * Adaptá esta función a tu implementación del carrito.
- *
- * @returns {Array<{ producto_id: number, cantidad: number }>}
- */
-function obtenerCarritoComoItems() {
-  // Ejemplo: leer de una variable global, localStorage, etc.
-  // return carrito.map(item => ({ producto_id: item.id, cantidad: item.cantidad }));
-  return [];
-}
+};
 ```
-
----
-
-## CSS sugerido (Tailwind equivalente en clases)
-
-```css
-/* Variables básicas — adaptá al tema de Dulces Momentos */
-.modal {
-  position: fixed; inset: 0;
-  background: rgba(0,0,0,0.75);
-  display: flex; align-items: center; justify-content: center;
-  z-index: 9999;
-}
-.modal.hidden { display: none; }
-
-.modal-content {
-  background: #181317;
-  border: 1px solid #2a1e27;
-  border-radius: 1rem;
-  padding: 2rem;
-  text-align: center;
-  max-width: 360px;
-  width: 90%;
-  color: #fff;
-}
-
-.modal-close {
-  position: absolute; top: 1rem; right: 1rem;
-  background: none; border: none;
-  font-size: 1.5rem; cursor: pointer; color: #aaa;
-}
-
-#qr-imagen { border-radius: 0.5rem; margin: 1rem auto; display: block; }
-
-.qr-monto  { font-size: 1.25rem; font-weight: bold; color: #d63384; }
-.qr-countdown { color: #aaa; font-size: 0.9rem; }
-.qr-estado { margin-top: 0.75rem; font-size: 1rem; }
-```
-
----
-
-> **Nota:** El QR expira en 30 minutos (configurable en el backend con `expiration_time: "PT30M"`).
-> Si el usuario no pagó en ese tiempo, simplemente hacé clic en "Cancelar" y generá un nuevo QR.
-

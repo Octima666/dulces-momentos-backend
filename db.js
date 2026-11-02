@@ -29,7 +29,8 @@ pool.on('error', (err) => {
 });
 
 /**
- * Inicializa las tablas necesarias (incluyendo verification_codes para 2FA)
+ * Inicializa las tablas necesarias (incluyendo verification_codes para 2FA,
+ * productos y pedidos para el sistema de pagos QR).
  */
 async function initTables() {
   try {
@@ -63,7 +64,33 @@ async function initTables() {
       ALTER TABLE usuarios ADD COLUMN IF NOT EXISTS rol VARCHAR(20) DEFAULT 'cliente';
     `);
 
-    console.log('[PostgreSQL] ✅ Tablas "verification_codes" y "usuarios" listas en Neon (con soporte para google_id y rol).');
+    // ── Catálogo de productos ────────────────────────────────────────────────
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS productos (
+        id      SERIAL PRIMARY KEY,
+        nombre  VARCHAR(200) NOT NULL,
+        precio  NUMERIC(12,2) NOT NULL CHECK (precio >= 0),
+        activo  BOOLEAN NOT NULL DEFAULT TRUE
+      );
+    `);
+
+    // ── Pedidos / órdenes de pago QR ─────────────────────────────────────────
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS pedidos (
+        id                 SERIAL PRIMARY KEY,
+        external_reference VARCHAR(100) NOT NULL UNIQUE,
+        mp_order_id        VARCHAR(100),
+        total              NUMERIC(12,2) NOT NULL,
+        items              JSONB NOT NULL DEFAULT '[]',
+        estado             VARCHAR(20)  NOT NULL DEFAULT 'pendiente'
+                             CHECK (estado IN ('pendiente','pagado','cancelado')),
+        usuario_id         INTEGER REFERENCES usuarios(id) ON DELETE SET NULL,
+        created_at         TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        paid_at            TIMESTAMPTZ
+      );
+    `);
+
+    console.log('[PostgreSQL] ✅ Tablas "verification_codes", "usuarios", "productos" y "pedidos" listas en Neon (con soporte para google_id y rol).');
   } catch (err) {
     console.error('[PostgreSQL Error inicializando tablas]:', err.message);
   }

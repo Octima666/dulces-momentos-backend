@@ -108,9 +108,9 @@ async function seed() {
              descripcion  = COALESCE(productos.descripcion, EXCLUDED.descripcion),
              imagen       = COALESCE(productos.imagen, EXCLUDED.imagen),
              badge        = COALESCE(productos.badge, EXCLUDED.badge),
-             tags         = COALESCE(productos.tags, EXCLUDED.tags),
-             tipo         = COALESCE(productos.tipo, EXCLUDED.tipo),
-             toppings_ids = COALESCE(productos.toppings_ids, EXCLUDED.toppings_ids),
+             tipo         = CASE WHEN EXCLUDED.tipo = 'topping' THEN 'topping' ELSE productos.tipo END,
+             tags         = CASE WHEN productos.tags = '[]'::jsonb THEN EXCLUDED.tags ELSE productos.tags END,
+             toppings_ids = CASE WHEN productos.toppings_ids = '[]'::jsonb THEN EXCLUDED.toppings_ids ELSE productos.toppings_ids END,
              activo       = COALESCE(productos.activo, EXCLUDED.activo)`,
         [
           prod.id,

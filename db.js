@@ -67,11 +67,40 @@ async function initTables() {
     // ── Catálogo de productos ────────────────────────────────────────────────
     await pool.query(`
       CREATE TABLE IF NOT EXISTS productos (
-        id      SERIAL PRIMARY KEY,
-        nombre  VARCHAR(200) NOT NULL,
-        precio  NUMERIC(12,2) NOT NULL CHECK (precio >= 0),
-        activo  BOOLEAN NOT NULL DEFAULT TRUE
+        id           SERIAL PRIMARY KEY,
+        nombre       VARCHAR(200) NOT NULL,
+        precio       NUMERIC(12,2) NOT NULL CHECK (precio >= 0),
+        categoria    VARCHAR(50),
+        descripcion  TEXT,
+        imagen       TEXT,
+        badge        VARCHAR(30),
+        tags         JSONB NOT NULL DEFAULT '[]',
+        tipo         VARCHAR(10) NOT NULL DEFAULT 'producto' CHECK (tipo IN ('producto','topping')),
+        toppings_ids JSONB NOT NULL DEFAULT '[]',
+        activo       BOOLEAN NOT NULL DEFAULT TRUE
       );
+    `);
+
+    // Migración idempotente de columnas y restricción tipo
+    await pool.query(`
+      ALTER TABLE productos ADD COLUMN IF NOT EXISTS categoria VARCHAR(50);
+      ALTER TABLE productos ADD COLUMN IF NOT EXISTS descripcion TEXT;
+      ALTER TABLE productos ADD COLUMN IF NOT EXISTS imagen TEXT;
+      ALTER TABLE productos ADD COLUMN IF NOT EXISTS badge VARCHAR(30);
+      ALTER TABLE productos ADD COLUMN IF NOT EXISTS tags JSONB NOT NULL DEFAULT '[]';
+      ALTER TABLE productos ADD COLUMN IF NOT EXISTS tipo VARCHAR(10) NOT NULL DEFAULT 'producto';
+      ALTER TABLE productos ADD COLUMN IF NOT EXISTS toppings_ids JSONB NOT NULL DEFAULT '[]';
+    `);
+
+    await pool.query(`
+      DO $$
+      BEGIN
+        IF NOT EXISTS (
+          SELECT 1 FROM pg_constraint WHERE conname = 'chk_productos_tipo'
+        ) THEN
+          ALTER TABLE productos ADD CONSTRAINT chk_productos_tipo CHECK (tipo IN ('producto','topping'));
+        END IF;
+      END $$;
     `);
 
     // ── Pedidos / órdenes de pago QR ─────────────────────────────────────────

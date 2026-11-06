@@ -161,7 +161,9 @@ app.get('/', (req, res) => {
       preferenciaMP: 'POST /api/crear-preferencia',
       crearPagoQR: 'POST /api/crear-pago-qr',
       estadoPagoQR: 'GET /api/estado-pago-qr/:orderId',
-      webhookMP: 'POST /api/webhook-mercadopago'
+      webhookMP: 'POST /api/webhook-mercadopago',
+      productosPublicos: 'GET /api/productos',
+      adminProductos: 'GET|POST /api/admin/productos, PUT|DELETE /api/admin/productos/:id'
     }
   });
 });
@@ -589,6 +591,312 @@ app.get('/api/admin/kds/verificar', requireAdmin, (req, res) => {
       rol: 'admin'
     }
   });
+});
+
+// ============================================================================
+// 4. CATÁLOGO DE PRODUCTOS & ADMINISTRACIÓN
+// ============================================================================
+
+/**
+ * Valida el payload de producto para POST y PUT.
+ */
+async function validarProductoPayload(body, isUpdate = false) {
+  if (!isUpdate) {
+    if (!body.nombre || typeof body.nombre !== 'string' || body.nombre.trim().length === 0) {
+      return 'El nombre es obligatorio y debe tener entre 1 y 200 caracteres.';
+    }
+    if (body.precio === undefined || body.precio === null || isNaN(Number(body.precio))) {
+      return 'El precio es obligatorio y debe ser un número mayor o igual a 0.';
+    }
+  }
+
+  if (body.nombre !== undefined) {
+    if (typeof body.nombre !== 'string' || body.nombre.trim().length === 0 || body.nombre.trim().length > 200) {
+      return 'El nombre debe ser una cadena de texto de 1 a 200 caracteres.';
+    }
+  }
+
+  if (body.precio !== undefined) {
+    const p = Number(body.precio);
+    if (isNaN(p) || p < 0) {
+      return 'El precio debe ser un número mayor o igual a 0.';
+    }
+  }
+
+  if (body.imagen !== undefined && body.imagen !== null && body.imagen !== '') {
+    if (typeof body.imagen !== 'string' || !/^https?:\/\/.+/i.test(body.imagen.trim())) {
+      return 'La imagen debe ser una URL válida que comience con http:// o https://.';
+    }
+  }
+
+  if (body.categoria !== undefined && body.categoria !== null) {
+    if (typeof body.categoria !== 'string' || body.categoria.length > 50) {
+      return 'La categoría no puede superar los 50 caracteres.';
+    }
+  }
+
+  if (body.badge !== undefined && body.badge !== null) {
+    if (typeof body.badge !== 'string' || body.badge.length > 30) {
+      return 'El badge no puede superar los 30 caracteres.';
+    }
+  }
+
+  if (body.tipo !== undefined) {
+    if (body.tipo !== 'producto' && body.tipo !== 'topping') {
+      return "El tipo debe ser 'producto' o 'topping'.";
+    }
+  }
+
+  if (body.tags !== undefined && body.tags !== null) {
+    if (!Array.isArray(body.tags)) {
+      return 'Los tags deben ser un array de strings (máx 20).';
+    }
+    if (body.tags.length > 20) {
+      return 'Los tags no pueden superar los 20 elementos.';
+    }
+    for (const tag of body.tags) {
+      if (typeof tag !== 'string') {
+        return 'Cada tag debe ser una cadena de texto.';
+      }
+    }
+  }
+
+  if (body.toppings_ids !== undefined && body.toppings_ids !== null) {
+    if (!Array.isArray(body.toppings_ids)) {
+      return 'toppings_ids debe ser un array de IDs numéricos.';
+    }
+    for (const tid of body.toppings_ids) {
+      const num = Number(tid);
+      if (!Number.isInteger(num) || num <= 0) {
+        return `toppings_ids contiene un ID inválido: ${tid}. Deben ser enteros positivos.`;
+      }
+    }
+    if (body.toppings_ids.length > 0) {
+      const uniqueIds = [...new Set(body.toppings_ids.map(Number))];
+      const { rows } = await pool.query(
+        "SELECT id FROM productos WHERE id = ANY($1) AND tipo = 'topping'",
+        [uniqueIds]
+      );
+      if (rows.length !== uniqueIds.length) {
+        const found = rows.map(r => r.id);
+        const missing = uniqueIds.filter(id => !found.includes(id));
+        return `Los siguientes toppings no existen o no son de tipo 'topping': ${missing.join(', ')}.`;
+      }
+    }
+  }
+
+  if (body.activo !== undefined && typeof body.activo !== 'boolean') {
+    return 'El campo activo debe ser un booleano (true o false).';
+  }
+
+  return null;
+}
+
+/**
+ * GET /api/productos (público)
+ * Devuelve productos activos de tipo 'producto' con toppings resueltos y precio numérico.
+ */
+app.get('/api/productos', async (req, res) => {
+  try {
+    const { rows: prods } = await pool.query(
+      `SELECT id, nombre, categoria, precio, descripcion, imagen, badge, tags, toppings_ids
+       FROM productos
+       WHERE activo = TRUE AND tipo = 'producto'
+       ORDER BY id ASC`
+    );
+
+    const { rows: activeToppings } = await pool.query(
+      `SELECT id, nombre, precio
+       FROM productos
+       WHERE activo = TRUE AND tipo = 'topping'`
+    );
+
+    const mapToppings = new Map();
+    for (const top of activeToppings) {
+      mapToppings.set(top.id, {
+        id: top.id,
+        nombre: top.nombre.replace(/^Extra:\s*/i, ''),
+        precio: Number(top.precio)
+      });
+    }
+
+    const productos = prods.map(p => {
+      const topIds = Array.isArray(p.toppings_ids) ? p.toppings_ids : [];
+      const toppings = topIds.map(tid => mapToppings.get(tid)).filter(Boolean);
+      return {
+        id: p.id,
+        nombre: p.nombre,
+        categoria: p.categoria || null,
+        precio: Number(p.precio),
+        descripcion: p.descripcion || null,
+        imagen: p.imagen || null,
+        badge: p.badge || null,
+        tags: Array.isArray(p.tags) ? p.tags : [],
+        toppings
+      };
+    });
+
+    return res.json({ success: true, productos });
+  } catch (error) {
+    console.error('[Error en GET /api/productos]:', error);
+    return res.status(500).json({ success: false, error: 'Error al obtener los productos.' });
+  }
+});
+
+/**
+ * GET /api/admin/productos (admin)
+ * Devuelve todos los productos (incluyendo inactivos y toppings) con campos crudos.
+ */
+app.get('/api/admin/productos', requireAdmin, async (req, res) => {
+  try {
+    const { rows: productos } = await pool.query(
+      `SELECT id, nombre, categoria, precio, descripcion, imagen, badge, tags, tipo, toppings_ids, activo
+       FROM productos
+       ORDER BY id ASC`
+    );
+    return res.json({ success: true, productos });
+  } catch (error) {
+    console.error('[Error en GET /api/admin/productos]:', error);
+    return res.status(500).json({ success: false, error: 'Error al obtener los productos (admin).' });
+  }
+});
+
+/**
+ * POST /api/admin/productos (admin)
+ * Crea un nuevo producto o topping. Responde 201 con el registro creado.
+ */
+app.post('/api/admin/productos', requireAdmin, async (req, res) => {
+  try {
+    const errorMsg = await validarProductoPayload(req.body, false);
+    if (errorMsg) {
+      return res.status(400).json({ success: false, error: errorMsg });
+    }
+
+    const {
+      nombre,
+      precio,
+      categoria = null,
+      descripcion = null,
+      imagen = null,
+      badge = null,
+      tags = [],
+      tipo = 'producto',
+      toppings_ids = [],
+      activo = true
+    } = req.body;
+
+    const { rows } = await pool.query(
+      `INSERT INTO productos (nombre, precio, categoria, descripcion, imagen, badge, tags, tipo, toppings_ids, activo)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+       RETURNING *`,
+      [
+        nombre.trim(),
+        Number(precio),
+        categoria ? categoria.trim() : null,
+        descripcion ? descripcion.trim() : null,
+        imagen ? imagen.trim() : null,
+        badge ? badge.trim() : null,
+        JSON.stringify(tags),
+        tipo,
+        JSON.stringify(toppings_ids),
+        activo !== false
+      ]
+    );
+
+    return res.status(201).json({ success: true, producto: rows[0] });
+  } catch (error) {
+    console.error('[Error en POST /api/admin/productos]:', error);
+    return res.status(500).json({ success: false, error: 'Error al crear el producto.' });
+  }
+});
+
+/**
+ * PUT /api/admin/productos/:id (admin)
+ * Actualización parcial de un producto o topping. Responde 404 si no existe.
+ */
+app.put('/api/admin/productos/:id', requireAdmin, async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    if (!Number.isInteger(id) || id <= 0) {
+      return res.status(400).json({ success: false, error: 'ID de producto inválido.' });
+    }
+
+    const errorMsg = await validarProductoPayload(req.body, true);
+    if (errorMsg) {
+      return res.status(400).json({ success: false, error: errorMsg });
+    }
+
+    const camposPermitidos = [
+      'nombre', 'precio', 'categoria', 'descripcion',
+      'imagen', 'badge', 'tags', 'tipo', 'toppings_ids', 'activo'
+    ];
+
+    const updates = [];
+    const values = [];
+    let idx = 1;
+
+    for (const campo of camposPermitidos) {
+      if (req.body[campo] !== undefined) {
+        let val = req.body[campo];
+        if (campo === 'nombre') val = val.trim();
+        else if (campo === 'precio') val = Number(val);
+        else if (campo === 'categoria' || campo === 'descripcion' || campo === 'imagen' || campo === 'badge') {
+          val = val !== null ? String(val).trim() : null;
+        } else if (campo === 'tags' || campo === 'toppings_ids') {
+          val = JSON.stringify(val);
+        }
+        updates.push(`${campo} = $${idx}`);
+        values.push(val);
+        idx++;
+      }
+    }
+
+    if (updates.length === 0) {
+      return res.status(400).json({ success: false, error: 'No se enviaron campos para actualizar.' });
+    }
+
+    values.push(id);
+    const { rows } = await pool.query(
+      `UPDATE productos SET ${updates.join(', ')} WHERE id = $${idx} RETURNING *`,
+      values
+    );
+
+    if (rows.length === 0) {
+      return res.status(404).json({ success: false, error: 'Producto no encontrado.' });
+    }
+
+    return res.json({ success: true, producto: rows[0] });
+  } catch (error) {
+    console.error('[Error en PUT /api/admin/productos/:id]:', error);
+    return res.status(500).json({ success: false, error: 'Error al actualizar el producto.' });
+  }
+});
+
+/**
+ * DELETE /api/admin/productos/:id (admin)
+ * Borrado lógico (activo = FALSE). Responde 404 si no existe.
+ */
+app.delete('/api/admin/productos/:id', requireAdmin, async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    if (!Number.isInteger(id) || id <= 0) {
+      return res.status(400).json({ success: false, error: 'ID de producto inválido.' });
+    }
+
+    const { rows } = await pool.query(
+      'UPDATE productos SET activo = FALSE WHERE id = $1 RETURNING *',
+      [id]
+    );
+
+    if (rows.length === 0) {
+      return res.status(404).json({ success: false, error: 'Producto no encontrado.' });
+    }
+
+    return res.json({ success: true, message: 'Producto desactivado correctamente.', producto: rows[0] });
+  } catch (error) {
+    console.error('[Error en DELETE /api/admin/productos/:id]:', error);
+    return res.status(500).json({ success: false, error: 'Error al eliminar el producto.' });
+  }
 });
 
 // ============================================================================

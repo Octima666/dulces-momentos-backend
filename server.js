@@ -163,7 +163,9 @@ app.get('/', (req, res) => {
       estadoPagoQR: 'GET /api/estado-pago-qr/:orderId',
       webhookMP: 'POST /api/webhook-mercadopago',
       productosPublicos: 'GET /api/productos',
-      adminProductos: 'GET|POST /api/admin/productos, PUT|DELETE /api/admin/productos/:id'
+      adminProductos: 'GET|POST /api/admin/productos, PUT|DELETE /api/admin/productos/:id',
+      subirImagen: 'POST /api/admin/imagenes',
+      verImagen: 'GET /api/imagenes/:id'
     }
   });
 });
@@ -896,6 +898,115 @@ app.delete('/api/admin/productos/:id', requireAdmin, async (req, res) => {
   } catch (error) {
     console.error('[Error en DELETE /api/admin/productos/:id]:', error);
     return res.status(500).json({ success: false, error: 'Error al eliminar el producto.' });
+  }
+});
+
+/**
+ * Magic bytes para validar formatos reales de imagen (JPEG, PNG, WebP)
+ */
+const MIME_MAGIC_MAP = {
+  'image/jpeg': (buf) => buf.length >= 3 && buf[0] === 0xFF && buf[1] === 0xD8 && buf[2] === 0xFF,
+  'image/png': (buf) => buf.length >= 8 &&
+    buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4E && buf[3] === 0x47 &&
+    buf[4] === 0x0D && buf[5] === 0x0A && buf[6] === 0x1A && buf[7] === 0x0A,
+  'image/webp': (buf) => buf.length >= 12 &&
+    buf.subarray(0, 4).toString('ascii') === 'RIFF' &&
+    buf.subarray(8, 12).toString('ascii') === 'WEBP'
+};
+
+const rawImageParser = express.raw({
+  type: ['image/jpeg', 'image/png', 'image/webp'],
+  limit: '2mb'
+});
+
+/**
+ * POST /api/admin/imagenes (requireAdmin)
+ * Guarda imagen binaria en PostgreSQL y devuelve su URL pública.
+ */
+app.post(
+  '/api/admin/imagenes',
+  requireAdmin,
+  (req, res, next) => {
+    rawImageParser(req, res, (err) => {
+      if (err) {
+        if (err.type === 'entity.too.large' || err.status === 413) {
+          return res.status(400).json({ success: false, error: 'La imagen supera el límite permitido de 2MB.' });
+        }
+        return res.status(400).json({ success: false, error: 'Error al procesar el archivo binario.' });
+      }
+      next();
+    });
+  },
+  async (req, res) => {
+    try {
+      const rawContentType = req.headers['content-type'] || '';
+      const mime = rawContentType.split(';')[0].trim().toLowerCase();
+
+      const TIPOS_PERMITIDOS = ['image/jpeg', 'image/png', 'image/webp'];
+      if (!TIPOS_PERMITIDOS.includes(mime)) {
+        return res.status(400).json({
+          success: false,
+          error: `Tipo de contenido inválido: ${mime || 'no especificado'}. Permitidos: image/jpeg, image/png, image/webp.`
+        });
+      }
+
+      if (!Buffer.isBuffer(req.body) || req.body.length === 0) {
+        return res.status(400).json({
+          success: false,
+          error: 'El cuerpo de la solicitud debe ser un archivo binario no vacío.'
+        });
+      }
+
+      const checkMagic = MIME_MAGIC_MAP[mime];
+      if (!checkMagic || !checkMagic(req.body)) {
+        return res.status(400).json({
+          success: false,
+          error: `Los bytes del archivo no coinciden con el formato declarado (${mime}).`
+        });
+      }
+
+      const { rows } = await pool.query(
+        'INSERT INTO imagenes (mime, data) VALUES ($1, $2) RETURNING id',
+        [mime, req.body]
+      );
+
+      const id = rows[0].id;
+      const proto = req.headers['x-forwarded-proto'] || req.protocol;
+      const host = req.get('host');
+      const url = `${proto}://${host}/api/imagenes/${id}`;
+
+      return res.status(201).json({ success: true, url });
+    } catch (error) {
+      console.error('[Error en POST /api/admin/imagenes]:', error);
+      return res.status(500).json({ success: false, error: 'Error al guardar la imagen.' });
+    }
+  }
+);
+
+/**
+ * GET /api/imagenes/:id (público)
+ * Retorna los bytes de la imagen con cache inmutable y CORP cross-origin.
+ */
+app.get('/api/imagenes/:id', async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    if (!Number.isInteger(id) || id <= 0) {
+      return res.status(404).json({ success: false, error: 'Imagen no encontrada.' });
+    }
+
+    const { rows } = await pool.query('SELECT mime, data FROM imagenes WHERE id = $1', [id]);
+    if (rows.length === 0) {
+      return res.status(404).json({ success: false, error: 'Imagen no encontrada.' });
+    }
+
+    const imagen = rows[0];
+    res.setHeader('Content-Type', imagen.mime);
+    res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+    res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
+    return res.send(imagen.data);
+  } catch (error) {
+    console.error('[Error en GET /api/imagenes/:id]:', error);
+    return res.status(500).json({ success: false, error: 'Error al obtener la imagen.' });
   }
 });
 

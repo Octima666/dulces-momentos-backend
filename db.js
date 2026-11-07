@@ -119,7 +119,17 @@ async function initTables() {
       );
     `);
 
-    console.log('[PostgreSQL] ✅ Tablas "verification_codes", "usuarios", "productos" y "pedidos" listas en Neon (con soporte para google_id y rol).');
+    // ── Almacenamiento de imágenes de productos ──────────────────────────────
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS imagenes (
+        id         SERIAL PRIMARY KEY,
+        mime       VARCHAR(30) NOT NULL,
+        data       BYTEA NOT NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+    `);
+
+    console.log('[PostgreSQL] ✅ Tablas "verification_codes", "usuarios", "productos", "pedidos" e "imagenes" listas en Neon (con soporte para google_id y rol).');
   } catch (err) {
     console.error('[PostgreSQL Error inicializando tablas]:', err.message);
   }
